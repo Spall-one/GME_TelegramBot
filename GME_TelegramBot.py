@@ -4,6 +4,8 @@ import sqlite3
 import requests
 import random
 import time  # Assicurati di importare il modulo time
+import threading
+from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackContext
 from datetime import datetime, time, timezone, timedelta
@@ -23,6 +25,26 @@ MARKET_CLOSE_TIME = time(22, 10)
 # Orari di apertura e chiusura delle scommesse
 START_TIME = time(0, 0)  # Apertura a mezzanotte
 CUTOFF_TIME = time(15, 30)  # Chiusura alle 15:30
+
+
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!", 200
+
+def run():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
+
+def start_keep_alive_server():
+    t = threading.Thread(target=run)
+    t.start()
+
+# Avvia il server di keep-alive
+start_keep_alive_server()
+
 
 # Database setup
 DB_FILE = "predictions.db"
