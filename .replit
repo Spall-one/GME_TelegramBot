@@ -10,3 +10,14 @@ run = ["sh", "-c", "python3 GME_TelegramBot.py"]
 [[ports]]
 localPort = 8080
 externalPort = 80
+
+[workflows]
+runButton = "Bot with Monitor"
+
+[[workflows.workflow]]
+name = "Bot with Monitor"
+author = 40112718
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python3 GME_TelegramBot.py & python3 monitor.py"
