@@ -40,13 +40,24 @@ app = Flask(__name__)
 def home():
     return "Bot is running!", 200
 
+@app.route('/health')
+def health():
+    # Verifica stato del bot e ritorna 200 OK se è attivo
+    return {"status": "up", "timestamp": time.time()}, 200
+
 def run():
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    try:
+        app.run(host="0.0.0.0", port=port)
+    except Exception as e:
+        logging.error(f"Keep-alive server error: {e}")
+        time.sleep(5)  # Wait before retrying
+        run()  # Restart server
 
 def start_keep_alive_server():
-    t = threading.Thread(target=run)
+    t = threading.Thread(target=run, daemon=True)
     t.start()
+    logging.info("Keep-alive server started on port 8080")
 
 # Avvia il server di keep-alive
 start_keep_alive_server()
@@ -507,12 +518,34 @@ def main():
     application.add_handler(CommandHandler("testVincitore", testVincitore))
     logging.info("Bot avviato con successo!")
 
+    # Watchdog timer per riavviare il bot se si blocca
+    last_attempt_time = time.time()
+    max_retry_interval = 300  # 5 minuti massimi tra i tentativi
+    retry_count = 0
+
     while True:
         try:
-            application.run_polling()
+            # Resetta il contatore di tentativi se è passato troppo tempo dall'ultimo errore
+            current_time = time.time()
+            if current_time - last_attempt_time > 3600:  # 1 ora
+                retry_count = 0
+                
+            last_attempt_time = current_time
+            logging.info(f"Avvio sessione di polling #{retry_count + 1}")
+            application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
         except Exception as e:
-            logging.error(f"Il bot si è bloccato con errore: {e}. Riprovo tra 5 secondi...")
-            time.sleep(5)
+            retry_count += 1
+            # Calcola tempo di attesa con backoff esponenziale, ma con un limite massimo
+            wait_time = min(5 * (2 ** min(retry_count, 5)), max_retry_interval)
+            logging.error(f"Bot bloccato con errore: {e}. Tentativo #{retry_count}. Riavvio tra {wait_time} secondi...")
+            
+            # Invia heartbeat al server di keep-alive
+            try:
+                requests.get("http://localhost:8080/", timeout=10)
+            except Exception:
+                pass
+                
+            time.sleep(wait_time)
 
 if __name__ == "__main__":
     main()
