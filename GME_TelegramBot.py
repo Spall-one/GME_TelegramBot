@@ -395,7 +395,6 @@ async def vincitore(update: Update, context: CallbackContext):
 
 
 
-# Funzione di test per verificare il calcolo dei vincitori senza toccare il database
 async def testVincitore(update: Update, context: CallbackContext):
     """
     Funzione per testare il calcolo del vincitore con premi e penalità corretti.
@@ -529,7 +528,7 @@ def main():
             current_time = time_module.time()
             if current_time - last_attempt_time > 3600:  # 1 ora
                 retry_count = 0
-                
+
             last_attempt_time = current_time
             logging.info(f"Avvio sessione di polling #{retry_count + 1}")
             application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
@@ -538,13 +537,13 @@ def main():
             # Calcola tempo di attesa con backoff esponenziale, ma con un limite massimo
             wait_time = min(5 * (2 ** min(retry_count, 5)), max_retry_interval)
             logging.error(f"Bot bloccato con errore: {e}. Tentativo #{retry_count}. Riavvio tra {wait_time} secondi...")
-            
+
             # Invia heartbeat al server di keep-alive
             try:
                 requests.get("http://localhost:8080/", timeout=10)
             except Exception:
                 pass
-                
+
             time_module.sleep(wait_time)
 
 if __name__ == "__main__":
