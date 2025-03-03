@@ -28,15 +28,19 @@ def is_bot_running():
 def restart_bot():
     logging.warning("Riavvio del bot in corso...")
     try:
-        # Trova e termina qualsiasi processo python esistente
-        os.system("pkill -f python")
+        # Trova e termina solo il processo del bot, non tutti i processi Python
+        os.system(f"pkill -f {BOT_SCRIPT}")
         time.sleep(5)  # Attendi che i processi terminino
         
-        # Avvia il bot in background
-        subprocess.Popen(["python3", BOT_SCRIPT], 
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE)
-        logging.info("Bot riavviato con successo")
+        # Avvia il bot in background con nohup per mantenerlo attivo
+        with open("bot.log", "a") as log_file:
+            process = subprocess.Popen(
+                ["python3", BOT_SCRIPT],
+                stdout=log_file,
+                stderr=log_file,
+                start_new_session=True
+            )
+        logging.info(f"Bot riavviato con successo (PID: {process.pid})")
     except Exception as e:
         logging.error(f"Errore nel riavvio del bot: {e}")
 
