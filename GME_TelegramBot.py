@@ -169,6 +169,13 @@ async def bet(update: Update, context: CallbackContext):
     if existing_bet:
         await update.message.reply_text("⚠️ Hai già scommesso oggi! Non puoi cambiarla.")
         return
+        
+    # Controllo per scommesse identiche da utenti diversi
+    c.execute("SELECT 1 FROM predictions WHERE prediction = ? AND date = ?", (prediction, today_date))
+    same_prediction = c.fetchone()
+    if same_prediction:
+        await update.message.reply_text("⚠️ Questo valore è già stato scommesso da un altro utente! Prova con un valore diverso.")
+        return
 
     # Salva la scommessa nel database
     c.execute("INSERT INTO predictions (user_id, username, prediction, date) VALUES (?, ?, ?, ?)",
