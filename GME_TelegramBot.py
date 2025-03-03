@@ -3,7 +3,7 @@ import logging
 import sqlite3
 import requests
 import random
-import time  # Assicurati di importare il modulo time
+import time as time_module  # Rinominato per evitare conflitti
 import threading
 from flask import Flask
 from telegram import Update
@@ -43,7 +43,7 @@ def home():
 @app.route('/health')
 def health():
     # Verifica stato del bot e ritorna 200 OK se è attivo
-    return {"status": "up", "timestamp": time.time()}, 200
+    return {"status": "up", "timestamp": time_module.time()}, 200
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -51,7 +51,7 @@ def run():
         app.run(host="0.0.0.0", port=port)
     except Exception as e:
         logging.error(f"Keep-alive server error: {e}")
-        time.sleep(5)  # Wait before retrying
+        time_module.sleep(5)  # Wait before retrying
         run()  # Restart server
 
 def start_keep_alive_server():
@@ -519,14 +519,14 @@ def main():
     logging.info("Bot avviato con successo!")
 
     # Watchdog timer per riavviare il bot se si blocca
-    last_attempt_time = time.time()
+    last_attempt_time = time_module.time()
     max_retry_interval = 300  # 5 minuti massimi tra i tentativi
     retry_count = 0
 
     while True:
         try:
             # Resetta il contatore di tentativi se è passato troppo tempo dall'ultimo errore
-            current_time = time.time()
+            current_time = time_module.time()
             if current_time - last_attempt_time > 3600:  # 1 ora
                 retry_count = 0
                 
@@ -545,7 +545,7 @@ def main():
             except Exception:
                 pass
                 
-            time.sleep(wait_time)
+            time_module.sleep(wait_time)
 
 if __name__ == "__main__":
     main()
