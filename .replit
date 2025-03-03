@@ -20,4 +20,4 @@ author = 40112718
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "python3 GME_TelegramBot.py & python3 monitor.py"
+args = "python3 monitor.py"

@@ -20,9 +20,9 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "7608713319:AAHM4HGcNb18q8OI27BJDVa5HK0Nv-njbm8")
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GME_TICKER = "GME"
-API_KEY = os.getenv("FINNHUB_API_KEY", "cuqg78pr01qsd02e4fp0cuqg78pr01qsd02e4fpg")  # Finnhub API Key
+API_KEY = os.getenv("FINNHUB_API_KEY")  # Finnhub API Key
 
 # Imposta il fuso orario italiano
 ITALY_TZ = timezone(timedelta(hours=1))
