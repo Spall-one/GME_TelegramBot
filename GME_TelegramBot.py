@@ -5,6 +5,7 @@ import requests
 import random
 import time as time_module  # Rinominato per evitare conflitti
 import threading
+import asyncio
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackContext
@@ -513,6 +514,8 @@ async def betTEST(update: Update, context: CallbackContext):
 
 
 # Funzione per avviare il bot
+
+
 def main():
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("bet", bet))
@@ -524,33 +527,37 @@ def main():
     application.add_handler(CommandHandler("testVincitore", testVincitore))
     logging.info("Bot avviato con successo!")
 
-    # Watchdog timer per riavviare il bot se si blocca
     last_attempt_time = time_module.time()
     max_retry_interval = 300  # 5 minuti massimi tra i tentativi
     retry_count = 0
 
     while True:
         try:
-            # Resetta il contatore di tentativi se è passato troppo tempo dall'ultimo errore
+            # Resetta il contatore se è passato troppo tempo dall'ultimo errore
             current_time = time_module.time()
             if current_time - last_attempt_time > 3600:  # 1 ora
                 retry_count = 0
-
             last_attempt_time = current_time
+
             logging.info(f"Avvio sessione di polling #{retry_count + 1}")
-            application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
+            # Crea un nuovo event loop per questa sessione di polling
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            # run_polling() è una coroutine; usiamo run_until_complete per farla girare
+            new_loop.run_until_complete(
+                application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+            )
+            new_loop.close()
+
         except Exception as e:
             retry_count += 1
-            # Calcola tempo di attesa con backoff esponenziale, ma con un limite massimo
             wait_time = min(5 * (2 ** min(retry_count, 5)), max_retry_interval)
             logging.error(f"Bot bloccato con errore: {e}. Tentativo #{retry_count}. Riavvio tra {wait_time} secondi...")
-
-            # Invia heartbeat al server di keep-alive
             try:
                 requests.get("http://localhost:8080/", timeout=10)
             except Exception:
                 pass
-
             time_module.sleep(wait_time)
 
 if __name__ == "__main__":
