@@ -155,7 +155,7 @@ async def bet(update: Update, context: CallbackContext):
 
     # Controllo se è fuori orario (ammissibile solo tra 00:00 e 15:30)
     if now.time() < START_TIME or now.time() > CUTOFF_TIME:
-        await update.message.reply_text("❌ Le previsioni sono chiuse. Puoi scommettere tra 00:00 e 15:30 nei giorni di mercato aperto.")
+        await update.message.reply_text("❌ Le previsioni sono chiuse. Puoi scommettere tra 00:00 e 14:30 nei giorni di mercato aperto.")
         return
 
     try:
@@ -284,7 +284,7 @@ async def vincitore(update: Update, context: CallbackContext):
 
     # 1. Controllo orari e festività
     if date_offset == 0 and now.time() < MARKET_CLOSE_TIME:
-        await update.message.reply_text("⏳ Il mercato è ancora aperto! Puoi controllare il vincitore dopo le 22:10.")
+        await update.message.reply_text("⏳ Il mercato è ancora aperto! Puoi controllare il vincitore dopo le 21:10.")
         return
 
     if target_date in CHIUSURE_MERCATO:
