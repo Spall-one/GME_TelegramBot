@@ -27,11 +27,11 @@ API_KEY = os.getenv("FINNHUB_API_KEY")  # Finnhub API Key
 
 # Imposta il fuso orario italiano
 ITALY_TZ = timezone(timedelta(hours=1))
-MARKET_CLOSE_TIME = time(22, 10)
+MARKET_CLOSE_TIME = time(21, 10)
 
 # Orari di apertura e chiusura delle scommesse
 START_TIME = time(0, 0)  # Apertura a mezzanotte
-CUTOFF_TIME = time(15, 30)  # Chiusura alle 15:30
+CUTOFF_TIME = time(14, 30)  # Chiusura alle 15:30
 
 
 
