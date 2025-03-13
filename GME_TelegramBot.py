@@ -153,7 +153,7 @@ async def bet(update: Update, context: CallbackContext):
         await update.message.reply_text(f"❌ Il mercato è chiuso oggi ({today_date}). Le scommesse riapriranno il prossimo giorno utile.")
         return
 
-    # Controllo se è fuori orario (ammissibile solo tra 00:00 e 15:30)
+    # Controllo se è fuori orario (ammissibile solo tra 00:00 e 14:30)
     if now.time() < START_TIME or now.time() > CUTOFF_TIME:
         await update.message.reply_text("❌ Le previsioni sono chiuse. Puoi scommettere tra 00:00 e 14:30 nei giorni di mercato aperto.")
         return
@@ -164,17 +164,25 @@ async def bet(update: Update, context: CallbackContext):
         await update.message.reply_text("❗ Usa il comando così: /bet 2.5 (dove 2.5 è la tua previsione di variazione %)")
         return
 
-    # Controllo scommessa doppia: non mostriamo il valore già scommesso
+    # Controllo scommessa doppia per lo stesso utente
     c.execute("SELECT prediction FROM predictions WHERE user_id = ? AND date = ?", (user_id, today_date))
     existing_bet = c.fetchone()
     if existing_bet:
+        try:
+            await update.message.delete()
+        except Exception as e:
+            logging.error(f"Errore nel cancellare il messaggio: {e}")
         await update.message.reply_text("⚠️ Hai già scommesso oggi! Non puoi cambiarla.")
         return
-        
+
     # Controllo per scommesse identiche da utenti diversi
     c.execute("SELECT 1 FROM predictions WHERE prediction = ? AND date = ?", (prediction, today_date))
     same_prediction = c.fetchone()
     if same_prediction:
+        try:
+            await update.message.delete()
+        except Exception as e:
+            logging.error(f"Errore nel cancellare il messaggio: {e}")
         await update.message.reply_text("⚠️ Questo valore è già stato scommesso da un altro utente! Prova con un valore diverso.")
         return
 
@@ -189,16 +197,13 @@ async def bet(update: Update, context: CallbackContext):
         f"@{username} ha scommesso per la giornata odierna ({today_date})."
     )
 
-    # Prova a eliminare il messaggio originale per "nascondere" il comando
+    # Elimina il messaggio originale (già fatto in caso di errori, lo riproviamo qui per sicurezza)
     try:
         await update.message.delete()
     except Exception as e:
         logging.error(f"Errore nel cancellare il messaggio: {e}")
 
-    # Recupera l'eventuale id del thread (per gruppi con topic abilitati)
     thread_id = getattr(update.message, "message_thread_id", None)
-
-    # Invia il messaggio di conferma come nuovo messaggio nella stessa chat/thread
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=confirmation_message,
