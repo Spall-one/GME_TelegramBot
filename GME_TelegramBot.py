@@ -33,7 +33,7 @@ MARKET_CLOSE_TIME = time(21, 10)
 START_TIME = time(0, 0)  # Apertura a mezzanotte
 CUTOFF_TIME = time(14, 30)  # Chiusura alle 15:30
 
-
+ADMIN_CHAT_ID = 68001743  # Il tuo user ID
 
 app = Flask(__name__)
 
@@ -148,14 +148,12 @@ async def bet(update: Update, context: CallbackContext):
         await update.message.reply_text("⚠️ Non posso registrare la tua scommessa perché non hai un username su Telegram! Impostane uno e riprova.")
         return
 
-    # Controllo se il mercato è chiuso (weekend o festività)
     if weekday in [5, 6] or today_date in CHIUSURE_MERCATO:
         await update.message.reply_text(f"❌ Il mercato è chiuso oggi ({today_date}). Le scommesse riapriranno il prossimo giorno utile.")
         return
 
-    # Controllo se è fuori orario (ammissibile solo tra 00:00 e 14:30)
     if now.time() < START_TIME or now.time() > CUTOFF_TIME:
-        await update.message.reply_text("❌ Le previsioni sono chiuse. Puoi scommettere tra 00:00 e 14:30 nei giorni di mercato aperto.")
+        await update.message.reply_text("❌ Le previsioni sono chiuse. Puoi scommettere tra 00:00 e 15:30 nei giorni di mercato aperto.")
         return
 
     try:
@@ -191,18 +189,15 @@ async def bet(update: Update, context: CallbackContext):
               (user_id, username, prediction, today_date))
     conn.commit()
 
-    # Costruisci il messaggio di conferma senza mostrare il valore della scommessa
+    # Messaggio di conferma per il gruppo (senza mostrare il valore)
     confirmation_message = (
         f"✅ <b>Scommessa registrata!</b>\n"
         f"@{username} ha scommesso per la giornata odierna ({today_date})."
     )
-
-    # Elimina il messaggio originale (già fatto in caso di errori, lo riproviamo qui per sicurezza)
     try:
         await update.message.delete()
     except Exception as e:
         logging.error(f"Errore nel cancellare il messaggio: {e}")
-
     thread_id = getattr(update.message, "message_thread_id", None)
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
@@ -210,6 +205,22 @@ async def bet(update: Update, context: CallbackContext):
         parse_mode="HTML",
         message_thread_id=thread_id
     )
+
+    # Invia i dettagli completi della scommessa in modo privato all'amministratore
+    admin_message = (
+        f"📢 Nuova scommessa registrata:\n"
+        f"Utente: @{username}\n"
+        f"Valore scommesso: <b>{prediction}%</b>\n"
+        f"Data: {today_date}"
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=admin_message,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logging.error(f"Errore nell'invio del messaggio all'amministratore: {e}")
 
 
 # Funzione per mostrare il bilancio di un utente
