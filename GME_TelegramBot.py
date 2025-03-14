@@ -293,8 +293,8 @@ async def vincitore(update: Update, context: CallbackContext):
     """
     Funzione per determinare il vincitore e aggiornare i bilanci dei giocatori.
     Nuova modalità: se un utente azzecca esattamente la chiusura (diff arrotondata a 0),
-    guadagna le parti fisse (150 + 100 + 50 = 300€) e riceve anche l'intero importo
-    della parte variabile che i giocatori della metà inferiore hanno perso.
+    guadagna le parti fisse (150+100+50 = 300€) e riceve anche l'intero importo della parte variabile
+    persa dai giocatori della metà inferiore della classifica.
     Il messaggio invia anche l'elenco dei perdenti con l’importo perso.
     """
     # Imposta la data target (oggi oppure ieri se si passa l'argomento "yesterday")
@@ -343,21 +343,20 @@ async def vincitore(update: Update, context: CallbackContext):
             (user_id, username, prediction, round(abs(prediction - closing_percentage), 2))
             for user_id, username, prediction in predictions
         ]
-        predictions_with_diff.sort(key=lambda x: x[3])  # Ordina per differenza crescente
+        predictions_with_diff.sort(key=lambda x: x[3])
         num_players = len(predictions_with_diff)
         middle_index = num_players // 2  # Se dispari, il giocatore centrale non contribuisce al pool
         variable_pool = 0
-        losers_info = []  # Lista di tuple (username, importo perso)
-        
-        # Per ogni pairing tra il top half e il bottom half
+        losers_info = []  # Lista di tuple (user_id, username, importo perso)
         for i in range(middle_index):
             diff_top = predictions_with_diff[i][3]
             diff_bottom = predictions_with_diff[-(i + 1)][3]
             bonus = round((diff_bottom - diff_top) * 5, 2)  # risk_multiplier = 5
             lost_amount = abs(bonus)
             variable_pool += lost_amount
+            loser_id = predictions_with_diff[-(i + 1)][0]
             loser_username = predictions_with_diff[-(i + 1)][1]
-            losers_info.append((loser_username, lost_amount))
+            losers_info.append((loser_id, loser_username, lost_amount))
         
         fixed_total = 150 + 100 + 50  # Totale parti fisse = 300 €
         total_prize = fixed_total + variable_pool
@@ -371,10 +370,11 @@ async def vincitore(update: Update, context: CallbackContext):
         )
         
         # Aggiorna il bilancio dei perdenti (sottraendo l'importo perso)
-        for loser_username, lost_amount in losers_info:
+        for loser_id, loser_username, lost_amount in losers_info:
             c.execute(
-                "UPDATE balances SET balance = ROUND(balance - ?, 2) WHERE username = ?",
-                (lost_amount, loser_username)
+                "INSERT INTO balances (user_id, username, balance) VALUES (?, ?, ROUND(0 - ?, 2)) "
+                "ON CONFLICT(username) DO UPDATE SET balance = ROUND(balance - ?, 2)",
+                (loser_id, loser_username, lost_amount, lost_amount)
             )
         conn.commit()
         
@@ -382,15 +382,16 @@ async def vincitore(update: Update, context: CallbackContext):
         message = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n\n"
         message += f"🎉 <b>Perfetto!</b> @{username_pg} ha azzeccato al 100% la chiusura e si becca tutto: <b>{total_prize}€</b>!\n\n"
         message += "<b>Elenco dei perdenti:</b>\n"
-        for loser, lost in losers_info:
-            message += f"• @{loser}: perso <i>{lost}€</i>\n"
+        for loser_id, loser_username, lost in losers_info:
+            message += f"• @{loser_username}: perso <i>{lost}€</i>\n"
         
         c.execute("INSERT INTO winners (date, result) VALUES (?, ?)", (target_date, message))
         conn.commit()
         await update.message.reply_text(message, parse_mode="HTML")
         return
 
-    # Se non c'è un perfect guesser, esegui il calcolo standard dei punteggi.
+    # Ramo standard: nessun perfect guesser
+    # Calcola differenze e ordina le previsioni
     predictions = [
         (user_id, username, prediction, round(abs(prediction - closing_percentage), 2))
         for user_id, username, prediction in predictions
@@ -420,10 +421,22 @@ async def vincitore(update: Update, context: CallbackContext):
         mid_username = predictions[middle_index][1]
         balance_changes[mid_username] = [0, 0]
     
+    # Aggiorna i bilanci di tutti i giocatori nel ramo standard
+    for username, changes in balance_changes.items():
+        total_score = round(changes[0] + changes[1], 2)
+        user_id_val = next(u_id for u_id, usr, _, _ in predictions if usr == username)
+        c.execute(
+            "INSERT INTO balances (user_id, username, balance) VALUES (?, ?, ROUND(?, 2)) "
+            "ON CONFLICT(username) DO UPDATE SET balance = ROUND(balance + ?, 2)",
+            (user_id_val, username, total_score, total_score)
+        )
+    conn.commit()
+    
+    # Costruisci il messaggio finale con la classifica
     sorted_results = sorted(balance_changes.items(), key=lambda x: -(x[1][0] + x[1][1]))
     message = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n\n"
     for i, (username, changes) in enumerate(sorted_results):
-        user_id = next(u_id for u_id, usr, _, _ in predictions if usr == username)
+        user_id_val = next(u_id for u_id, usr, _, _ in predictions if usr == username)
         prediction = next(pred for _, usr, pred, _ in predictions if usr == username)
         diff = round(abs(prediction - closing_percentage), 2)
         rank = i + 1
@@ -452,6 +465,7 @@ async def vincitore(update: Update, context: CallbackContext):
     c.execute("INSERT INTO winners (date, result) VALUES (?, ?)", (target_date, message))
     conn.commit()
     await update.message.reply_text(message, parse_mode="HTML")
+
 
 
 
