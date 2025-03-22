@@ -21,6 +21,9 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# Orari di apertura e chiusura delle scommesse
+START_TIME = time(0, 0)  # Apertura a mezzanotte
+CUTOFF_TIME = time(14, 30)  # Chiusura alle 15:30
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GME_TICKER = "GME"
 API_KEY = os.getenv("FINNHUB_API_KEY")  # Finnhub API Key
@@ -31,9 +34,7 @@ CUTOFF_TIME_STR = f"{CUTOFF_TIME.hour:02d}:{CUTOFF_TIME.minute:02d}"
 ITALY_TZ = timezone(timedelta(hours=1))
 MARKET_CLOSE_TIME = time(21, 10)
 
-# Orari di apertura e chiusura delle scommesse
-START_TIME = time(0, 0)  # Apertura a mezzanotte
-CUTOFF_TIME = time(14, 30)  # Chiusura alle 15:30
+
 
 ADMIN_CHAT_ID = 68001743  # Il tuo user ID
 
