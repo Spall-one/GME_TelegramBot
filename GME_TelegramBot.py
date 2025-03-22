@@ -647,7 +647,7 @@ def main():
     app_instance.add_handler(CommandHandler("betTEST", betTEST))
     app_instance.add_handler(CommandHandler("classifica", classifica))
     app_instance.add_handler(CommandHandler("scommesse", scommesse))
-    application.add_handler(CommandHandler("chatid", chatid))
+    app_istance.add_handler(CommandHandler("chatid", chatid))
     app_instance.add_handler(CommandHandler("bilancio", bilancio))
     app_instance.add_handler(CommandHandler("testVincitore", testVincitore))
     logging.info("Bot avviato con successo!")
