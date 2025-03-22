@@ -653,7 +653,7 @@ def main():
     logging.info("Bot avviato con successo!")
     
     # Imposta il chat_id a cui inviare i reminder (ad es., il chat_id del gruppo)
-    REMINDER_CHAT_ID = <YOUR_CHAT_ID>  # Sostituisci con il vero chat id
+   # REMINDER_CHAT_ID = <YOUR_CHAT_ID>  # Sostituisci con il vero chat id
     
     # Avvia il reminder scheduler come task in background
     asyncio.create_task(reminder_scheduler(REMINDER_CHAT_ID))
