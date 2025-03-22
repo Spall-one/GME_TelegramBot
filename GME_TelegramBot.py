@@ -645,8 +645,8 @@ async def reminder_scheduler(chat_id: int):
 # Main function
 async def main_async():
     global app_instance
-    # Crea l'istanza del bot
     app_instance = Application.builder().token(TOKEN).build()
+    # Aggiungi i tuoi handler
     app_instance.add_handler(CommandHandler("bet", bet))
     app_instance.add_handler(CommandHandler("vincitore", vincitore))
     app_instance.add_handler(CommandHandler("betTEST", betTEST))
@@ -655,21 +655,22 @@ async def main_async():
     app_instance.add_handler(CommandHandler("bilancio", bilancio))
     app_instance.add_handler(CommandHandler("testVincitore", testVincitore))
     logging.info("Bot avviato con successo!")
-
+    
     # Avvia il reminder scheduler come task in background
-    reminder_task = asyncio.create_task(reminder_scheduler(GROUP_TOPIC_CHAT_ID))
+    asyncio.create_task(reminder_scheduler(GROUP_TOPIC_CHAT_ID))
     
-    # Avvia il polling del bot come task
-    polling_task = asyncio.create_task(
-        app_instance.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-    )
-    
-    # Attendi entrambe le task (questo bloccherà finché non vengono cancellate)
-    await asyncio.gather(reminder_task, polling_task)
+    # Avvia il polling del bot, ma indica close_loop=False per evitare che il loop venga chiuso
+    await app_instance.run_polling(allowed_updates=Update.ALL_TYPES,
+                                   drop_pending_updates=True,
+                                   close_loop=False)
 
 def main():
-    asyncio.run(main_async())
+    try:
+        asyncio.run(main_async())
+    except Exception as e:
+        logging.error(f"Errore nel main: {e}")
 
 if __name__ == "__main__":
     main()
+
 
