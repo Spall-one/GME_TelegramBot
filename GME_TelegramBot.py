@@ -6,10 +6,14 @@ import random
 import time as time_module  # Rinominato per evitare conflitti
 import threading
 import asyncio
+import nest_asyncio
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackContext
 from datetime import datetime, time, timezone, timedelta
+
+
+nest_asyncio.apply()
 
 # Configura logging
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -646,7 +650,6 @@ async def reminder_scheduler(chat_id: int):
 async def main_async():
     global app_instance
     app_instance = Application.builder().token(TOKEN).build()
-    # Aggiungi i tuoi handler
     app_instance.add_handler(CommandHandler("bet", bet))
     app_instance.add_handler(CommandHandler("vincitore", vincitore))
     app_instance.add_handler(CommandHandler("betTEST", betTEST))
@@ -659,7 +662,7 @@ async def main_async():
     # Avvia il reminder scheduler come task in background
     asyncio.create_task(reminder_scheduler(GROUP_TOPIC_CHAT_ID))
     
-    # Avvia il polling del bot, ma indica close_loop=False per evitare che il loop venga chiuso
+    # Avvia il polling del bot. Usa close_loop=False per evitare che il loop venga chiuso.
     await app_instance.run_polling(allowed_updates=Update.ALL_TYPES,
                                    drop_pending_updates=True,
                                    close_loop=False)
