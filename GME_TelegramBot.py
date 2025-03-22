@@ -262,6 +262,10 @@ async def classifica(update: Update, context: CallbackContext):
     await update.message.reply_text(message, parse_mode="HTML")
 
 
+    async def chatid(update: Update, context: CallbackContext):
+    await update.message.reply_text(f"Il chat_id di questa chat è: {update.effective_chat.id}")
+
+
 
 # Funzione per mostrare le scommesse del giorno
 async def scommesse(update: Update, context: CallbackContext):
@@ -579,45 +583,97 @@ async def betTEST(update: Update, context: CallbackContext):
         message_thread_id=thread_id  # Questo lo manda nel thread corretto se esiste
     )
 
+# Reminder scheduler: invia messaggi di reminder alla chat specificata
+async def reminder_scheduler(chat_id: int):
+    """
+    Invia reminder alla chat (chat_id) a 3 ore, 2 ore, 1 ora e 10 minuti
+    prima del cutoff delle scommesse.
+    Il reminder include il tempo rimanente (in forma testuale) e il numero di scommesse piazzate.
+    Non invia reminder nei giorni in cui il mercato è chiuso (CHIUSURE_MERCATO).
+    """
+    # Definisci gli offset in minuti e il messaggio corrispondente
+    reminder_offsets = [
+        (180, "Mancano 3 ore"),
+        (120, "Mancano 2 ore"),
+        (60,  "Manca 1 ora"),
+        (10,  "Mancano 10 minuti")
+    ]
+    while True:
+        now = datetime.now(ITALY_TZ)
+        # Calcola il cutoff per le scommesse per oggi (in base a CUTOFF_TIME)
+        cutoff = now.replace(hour=CUTOFF_TIME.hour, minute=CUTOFF_TIME.minute, second=0, microsecond=0)
+        # Se siamo già passati dal cutoff, calcola per il giorno successivo
+        if now > cutoff:
+            tomorrow = now + timedelta(days=1)
+            cutoff = tomorrow.replace(hour=CUTOFF_TIME.hour, minute=CUTOFF_TIME.minute, second=0, microsecond=0)
+        # Determina la data target
+        target_date = cutoff.strftime("%Y-%m-%d")
+        # Se il mercato è chiuso in quella data, non invia reminder
+        if target_date in CHIUSURE_MERCATO:
+            # Aspetta 60 secondi e riprova (il giorno potrebbe cambiare)
+            await asyncio.sleep(60)
+            continue
+
+        for offset, text in reminder_offsets:
+            reminder_time = cutoff - timedelta(minutes=offset)
+            # Se siamo entro 1 minuto dall'orario del reminder
+            if reminder_time <= now < reminder_time + timedelta(minutes=1):
+                try:
+                    c.execute("SELECT COUNT(*) FROM predictions WHERE date = ?", (target_date,))
+                    count = c.fetchone()[0]
+                except Exception as e:
+                    logging.error(f"Errore nell'interrogazione del database per i reminder: {e}")
+                    count = "non disponibile"
+                message = (f"🔔 {text}: il cutoff delle scommesse è fissato per {cutoff.strftime('%H:%M')}.\n"
+                           f"Finora sono state piazzate {count} scommesse per il {target_date}.")
+                try:
+                    await app_instance.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
+                except Exception as e:
+                    logging.error(f"Errore nell'invio del reminder: {e}")
+        # Controlla ogni 30 secondi
+        await asyncio.sleep(30)
 
 
 # Funzione per avviare il bot
 
 
+# Main function
 def main():
-    application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("bet", bet))
-    application.add_handler(CommandHandler("vincitore", vincitore))
-    application.add_handler(CommandHandler("betTEST", betTEST))
-    application.add_handler(CommandHandler("classifica", classifica))
-    application.add_handler(CommandHandler("scommesse", scommesse))
-    application.add_handler(CommandHandler("bilancio", bilancio))
-    application.add_handler(CommandHandler("testVincitore", testVincitore))
+    global app_instance  # Variabile globale per consentire l'accesso al bot nei task
+    app_instance = Application.builder().token(TOKEN).build()
+    app_instance.add_handler(CommandHandler("bet", bet))
+    app_instance.add_handler(CommandHandler("vincitore", vincitore))
+    app_instance.add_handler(CommandHandler("betTEST", betTEST))
+    app_instance.add_handler(CommandHandler("classifica", classifica))
+    app_instance.add_handler(CommandHandler("scommesse", scommesse))
+    application.add_handler(CommandHandler("chatid", chatid))
+    app_instance.add_handler(CommandHandler("bilancio", bilancio))
+    app_instance.add_handler(CommandHandler("testVincitore", testVincitore))
     logging.info("Bot avviato con successo!")
-
+    
+    # Imposta il chat_id a cui inviare i reminder (ad es., il chat_id del gruppo)
+    REMINDER_CHAT_ID = <YOUR_CHAT_ID>  # Sostituisci con il vero chat id
+    
+    # Avvia il reminder scheduler come task in background
+    asyncio.create_task(reminder_scheduler(REMINDER_CHAT_ID))
+    
     last_attempt_time = time_module.time()
-    max_retry_interval = 300  # 5 minuti massimi tra i tentativi
+    max_retry_interval = 300  # 5 minuti
     retry_count = 0
 
     while True:
         try:
-            # Resetta il contatore se è passato troppo tempo dall'ultimo errore
             current_time = time_module.time()
-            if current_time - last_attempt_time > 3600:  # 1 ora
+            if current_time - last_attempt_time > 3600:  # Se passata 1 ora, resetta il contatore
                 retry_count = 0
             last_attempt_time = current_time
-
             logging.info(f"Avvio sessione di polling #{retry_count + 1}")
-
-            # Crea un nuovo event loop per questa sessione di polling
             new_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(new_loop)
-            # run_polling() è una coroutine; usiamo run_until_complete per farla girare
             new_loop.run_until_complete(
-                application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+                app_instance.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
             )
             new_loop.close()
-
         except Exception as e:
             retry_count += 1
             wait_time = min(5 * (2 ** min(retry_count, 5)), max_retry_interval)
