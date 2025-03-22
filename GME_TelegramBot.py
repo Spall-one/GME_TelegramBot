@@ -24,6 +24,8 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GME_TICKER = "GME"
 API_KEY = os.getenv("FINNHUB_API_KEY")  # Finnhub API Key
+GROUP_TOPIC_CHAT_ID = -1001425180088 # ID del topic (o chat) in cui inviare i reminder
+CUTOFF_TIME_STR = f"{CUTOFF_TIME.hour:02d}:{CUTOFF_TIME.minute:02d}" 
 
 # Imposta il fuso orario italiano
 ITALY_TZ = timezone(timedelta(hours=1))
@@ -153,7 +155,7 @@ async def bet(update: Update, context: CallbackContext):
         return
 
     if now.time() < START_TIME or now.time() > CUTOFF_TIME:
-        await update.message.reply_text("❌ Le previsioni sono chiuse. Puoi scommettere tra 00:00 e 15:30 nei giorni di mercato aperto.")
+        await update.message.reply_text(f"❌ Le previsioni sono chiuse. Puoi scommettere tra 00:00 e {CUTOFF_TIME_STR} nei giorni di mercato aperto.")
         return
 
     try:
@@ -587,37 +589,39 @@ async def betTEST(update: Update, context: CallbackContext):
 # Reminder scheduler: invia messaggi di reminder alla chat specificata
 async def reminder_scheduler(chat_id: int):
     """
-    Invia reminder alla chat (chat_id) a 3 ore, 2 ore, 1 ora e 10 minuti
-    prima del cutoff delle scommesse.
-    Il reminder include il tempo rimanente (in forma testuale) e il numero di scommesse piazzate.
-    Non invia reminder nei giorni in cui il mercato è chiuso (CHIUSURE_MERCATO).
+    Invia reminder alla chat specificata (chat_id) a 3 ore, 2 ore, 1 ora e 10 minuti 
+    prima del cutoff delle scommesse. Non invia reminder nei giorni in cui il mercato è chiuso 
+    (verificando che la data target non sia in CHIUSURE_MERCATO).
     """
-    # Definisci gli offset in minuti e il messaggio corrispondente
+    # Calcola la stringa del cutoff (per esempio "14:30")
+    CUTOFF_TIME_STR = f"{CUTOFF_TIME.hour:02d}:{CUTOFF_TIME.minute:02d}"
+    
+    # Definisci gli offset in minuti e i relativi messaggi
     reminder_offsets = [
         (180, "Mancano 3 ore"),
         (120, "Mancano 2 ore"),
         (60,  "Manca 1 ora"),
         (10,  "Mancano 10 minuti")
     ]
+    
     while True:
         now = datetime.now(ITALY_TZ)
-        # Calcola il cutoff per le scommesse per oggi (in base a CUTOFF_TIME)
+        # Calcola il cutoff per le scommesse per oggi
         cutoff = now.replace(hour=CUTOFF_TIME.hour, minute=CUTOFF_TIME.minute, second=0, microsecond=0)
-        # Se siamo già passati dal cutoff, calcola per il giorno successivo
+        # Se l'orario attuale supera il cutoff, considera il giorno successivo
         if now > cutoff:
             tomorrow = now + timedelta(days=1)
             cutoff = tomorrow.replace(hour=CUTOFF_TIME.hour, minute=CUTOFF_TIME.minute, second=0, microsecond=0)
-        # Determina la data target
         target_date = cutoff.strftime("%Y-%m-%d")
-        # Se il mercato è chiuso in quella data, non invia reminder
+        
+        # Non inviare reminder se il mercato è chiuso in quella data
         if target_date in CHIUSURE_MERCATO:
-            # Aspetta 60 secondi e riprova (il giorno potrebbe cambiare)
             await asyncio.sleep(60)
             continue
-
+        
         for offset, text in reminder_offsets:
             reminder_time = cutoff - timedelta(minutes=offset)
-            # Se siamo entro 1 minuto dall'orario del reminder
+            # Se siamo entro un intervallo di 1 minuto dall'orario del reminder
             if reminder_time <= now < reminder_time + timedelta(minutes=1):
                 try:
                     c.execute("SELECT COUNT(*) FROM predictions WHERE date = ?", (target_date,))
@@ -625,13 +629,12 @@ async def reminder_scheduler(chat_id: int):
                 except Exception as e:
                     logging.error(f"Errore nell'interrogazione del database per i reminder: {e}")
                     count = "non disponibile"
-                message = (f"🔔 {text}: il cutoff delle scommesse è fissato per {cutoff.strftime('%H:%M')}.\n"
+                message = (f"🔔 {text}: il cutoff delle scommesse è fissato per {CUTOFF_TIME_STR}.\n"
                            f"Finora sono state piazzate {count} scommesse per il {target_date}.")
                 try:
                     await app_instance.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
                 except Exception as e:
                     logging.error(f"Errore nell'invio del reminder: {e}")
-        # Controlla ogni 30 secondi
         await asyncio.sleep(30)
 
 
@@ -652,11 +655,8 @@ def main():
     app_instance.add_handler(CommandHandler("testVincitore", testVincitore))
     logging.info("Bot avviato con successo!")
     
-    # Imposta il chat_id a cui inviare i reminder (ad es., il chat_id del gruppo)
-   # REMINDER_CHAT_ID = <YOUR_CHAT_ID>  # Sostituisci con il vero chat id
-    
-    # Avvia il reminder scheduler come task in background
-   # asyncio.create_task(reminder_scheduler(REMINDER_CHAT_ID))
+     # Avvia il reminder scheduler utilizzando il chat id del topic
+    asyncio.create_task(reminder_scheduler(GROUP_TOPIC_CHAT_ID))
     
     last_attempt_time = time_module.time()
     max_retry_interval = 300  # 5 minuti
