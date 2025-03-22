@@ -643,48 +643,33 @@ async def reminder_scheduler(chat_id: int):
 
 
 # Main function
-def main():
-    global app_instance  # Variabile globale per consentire l'accesso al bot nei task
+async def main_async():
+    global app_instance
+    # Crea l'istanza del bot
     app_instance = Application.builder().token(TOKEN).build()
     app_instance.add_handler(CommandHandler("bet", bet))
     app_instance.add_handler(CommandHandler("vincitore", vincitore))
     app_instance.add_handler(CommandHandler("betTEST", betTEST))
     app_instance.add_handler(CommandHandler("classifica", classifica))
     app_instance.add_handler(CommandHandler("scommesse", scommesse))
-    app_instance.add_handler(CommandHandler("chatid", chatid))
     app_instance.add_handler(CommandHandler("bilancio", bilancio))
     app_instance.add_handler(CommandHandler("testVincitore", testVincitore))
     logging.info("Bot avviato con successo!")
-    
-     # Avvia il reminder scheduler utilizzando il chat id del topic
-    asyncio.create_task(reminder_scheduler(GROUP_TOPIC_CHAT_ID))
-    
-    last_attempt_time = time_module.time()
-    max_retry_interval = 300  # 5 minuti
-    retry_count = 0
 
-    while True:
-        try:
-            current_time = time_module.time()
-            if current_time - last_attempt_time > 3600:  # Se passata 1 ora, resetta il contatore
-                retry_count = 0
-            last_attempt_time = current_time
-            logging.info(f"Avvio sessione di polling #{retry_count + 1}")
-            new_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(new_loop)
-            new_loop.run_until_complete(
-                app_instance.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-            )
-            new_loop.close()
-        except Exception as e:
-            retry_count += 1
-            wait_time = min(5 * (2 ** min(retry_count, 5)), max_retry_interval)
-            logging.error(f"Bot bloccato con errore: {e}. Tentativo #{retry_count}. Riavvio tra {wait_time} secondi...")
-            try:
-                requests.get("http://localhost:8080/", timeout=10)
-            except Exception:
-                pass
-            time_module.sleep(wait_time)
+    # Avvia il reminder scheduler come task in background
+    reminder_task = asyncio.create_task(reminder_scheduler(GROUP_TOPIC_CHAT_ID))
+    
+    # Avvia il polling del bot come task
+    polling_task = asyncio.create_task(
+        app_instance.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    )
+    
+    # Attendi entrambe le task (questo bloccherà finché non vengono cancellate)
+    await asyncio.gather(reminder_task, polling_task)
+
+def main():
+    asyncio.run(main_async())
 
 if __name__ == "__main__":
     main()
+
