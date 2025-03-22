@@ -656,7 +656,7 @@ def main():
    # REMINDER_CHAT_ID = <YOUR_CHAT_ID>  # Sostituisci con il vero chat id
     
     # Avvia il reminder scheduler come task in background
-    asyncio.create_task(reminder_scheduler(REMINDER_CHAT_ID))
+   # asyncio.create_task(reminder_scheduler(REMINDER_CHAT_ID))
     
     last_attempt_time = time_module.time()
     max_retry_interval = 300  # 5 minuti
