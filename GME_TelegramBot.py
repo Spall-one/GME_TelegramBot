@@ -262,7 +262,8 @@ async def classifica(update: Update, context: CallbackContext):
     await update.message.reply_text(message, parse_mode="HTML")
 
 
-    async def chatid(update: Update, context: CallbackContext):
+
+async def chatid(update: Update, context: CallbackContext):
     await update.message.reply_text(f"Il chat_id di questa chat è: {update.effective_chat.id}")
 
 
