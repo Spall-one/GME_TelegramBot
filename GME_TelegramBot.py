@@ -594,13 +594,14 @@ async def betTEST(update: Update, context: CallbackContext):
 # Reminder scheduler: invia messaggi di reminder alla chat specificata
 async def reminder_scheduler(chat_id: int):
     """
-    Invia reminder alla chat specificata (chat_id) a 3 ore, 2 ore, 1 ora e 10 minuti 
-    prima del cutoff delle scommesse. Non invia reminder nei giorni in cui il mercato è chiuso 
-    (verificando che la data target non sia in CHIUSURE_MERCATO).
+    Invia reminder alla chat (chat_id) a 3 ore, 2 ore, 1 ora e 10 minuti 
+    prima del cutoff delle scommesse.
+    Non invia reminder se oggi è sabato o domenica oppure se la data target è in CHIUSURE_MERCATO.
+    Per evitare duplicati, tiene traccia degli offset per cui il reminder è già stato inviato.
     """
-    # Calcola la stringa del cutoff (per esempio "14:30")
-    CUTOFF_TIME_STR = f"{CUTOFF_TIME.hour:02d}:{CUTOFF_TIME.minute:02d}"
-    
+    # Dizionario per tracciare gli offset già inviati per ciascuna data target
+    sent_reminders = {}
+
     # Definisci gli offset in minuti e i relativi messaggi
     reminder_offsets = [
         (180, "Mancano 3 ore"),
@@ -608,25 +609,37 @@ async def reminder_scheduler(chat_id: int):
         (60,  "Manca 1 ora"),
         (10,  "Mancano 10 minuti")
     ]
-    
+
     while True:
         now = datetime.now(ITALY_TZ)
-        # Calcola il cutoff per le scommesse per oggi
+
+        # Se oggi è sabato (weekday() == 5) o domenica (weekday() == 6), salta i reminder
+        if now.weekday() in [5, 6]:
+            await asyncio.sleep(60)
+            continue
+
+        # Calcola il cutoff per le scommesse per oggi usando CUTOFF_TIME
         cutoff = now.replace(hour=CUTOFF_TIME.hour, minute=CUTOFF_TIME.minute, second=0, microsecond=0)
-        # Se l'orario attuale supera il cutoff, considera il giorno successivo
+        # Se siamo già oltre il cutoff, calcola per il giorno successivo
         if now > cutoff:
             tomorrow = now + timedelta(days=1)
             cutoff = tomorrow.replace(hour=CUTOFF_TIME.hour, minute=CUTOFF_TIME.minute, second=0, microsecond=0)
         target_date = cutoff.strftime("%Y-%m-%d")
-        
-        # Non inviare reminder se il mercato è chiuso in quella data
+
+        # Se il mercato è chiuso per quella data, salta i reminder
         if target_date in CHIUSURE_MERCATO:
             await asyncio.sleep(60)
             continue
-        
+
+        # Inizializza sent_reminders per target_date se non esiste
+        if target_date not in sent_reminders:
+            sent_reminders[target_date] = set()
+
         for offset, text in reminder_offsets:
+            if offset in sent_reminders[target_date]:
+                continue  # Reminder già inviato per questo offset e data
             reminder_time = cutoff - timedelta(minutes=offset)
-            # Se siamo entro un intervallo di 1 minuto dall'orario del reminder
+            # Se siamo entro 1 minuto dalla finestra del reminder
             if reminder_time <= now < reminder_time + timedelta(minutes=1):
                 try:
                     c.execute("SELECT COUNT(*) FROM predictions WHERE date = ?", (target_date,))
@@ -634,13 +647,16 @@ async def reminder_scheduler(chat_id: int):
                 except Exception as e:
                     logging.error(f"Errore nell'interrogazione del database per i reminder: {e}")
                     count = "non disponibile"
-                message = (f"🔔 {text}: il cutoff delle scommesse è fissato per {CUTOFF_TIME_STR}.\n"
+                cutoff_str = f"{CUTOFF_TIME.hour:02d}:{CUTOFF_TIME.minute:02d}"
+                message = (f"🔔 {text}: il cutoff delle scommesse è fissato per {cutoff_str}.\n"
                            f"Finora sono state piazzate {count} scommesse per il {target_date}.")
                 try:
                     await app_instance.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
                 except Exception as e:
                     logging.error(f"Errore nell'invio del reminder: {e}")
+                sent_reminders[target_date].add(offset)
         await asyncio.sleep(30)
+
 
 
 # Funzione per avviare il bot
