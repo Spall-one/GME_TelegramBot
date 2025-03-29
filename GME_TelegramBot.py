@@ -27,7 +27,7 @@ load_dotenv()
 
 # Orari di apertura e chiusura delle scommesse
 START_TIME = time(0, 0)  # Apertura a mezzanotte
-CUTOFF_TIME = time(14, 30)  # Chiusura alle 15:30
+CUTOFF_TIME = time(15, 30)  # Chiusura alle 15:30
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GME_TICKER = "GME"
 API_KEY = os.getenv("FINNHUB_API_KEY")  # Finnhub API Key
@@ -36,7 +36,7 @@ CUTOFF_TIME_STR = f"{CUTOFF_TIME.hour:02d}:{CUTOFF_TIME.minute:02d}"
 
 # Imposta il fuso orario italiano
 ITALY_TZ = timezone(timedelta(hours=1))
-MARKET_CLOSE_TIME = time(21, 10)
+MARKET_CLOSE_TIME = time(22, 10)
 
 
 
@@ -648,8 +648,9 @@ async def reminder_scheduler(chat_id: int):
                     logging.error(f"Errore nell'interrogazione del database per i reminder: {e}")
                     count = "non disponibile"
                 cutoff_str = f"{CUTOFF_TIME.hour:02d}:{CUTOFF_TIME.minute:02d}"
-                message = (f"🔔 {text}: il cutoff delle scommesse è fissato per {cutoff_str}.\n"
-                           f"Finora sono state piazzate {count} scommesse per il {target_date}.")
+                message = (f"🔔 {text}: il termine delle scommesse è fissato per le {cutoff_str}.\n"
+                           f"Finora sono state piazzate solo {count} scommesse per il {target_date}.\n"
+                           f"Utilizza il comando /scommesse per scoprire chi non è una fighetta!")
                 try:
                     await app_instance.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
                 except Exception as e:
