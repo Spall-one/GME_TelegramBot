@@ -306,8 +306,8 @@ async def vincitore(update: Update, context: CallbackContext):
     persa dai giocatori della metà inferiore della classifica.
     Il messaggio invia anche l'elenco dei perdenti con l’importo perso.
     """
-    # Imposta la data target (oggi oppure ieri se si passa l'argomento "yesterday")
-    now = datetime.utcnow() + timedelta(hours=1)  # Ora italiana
+    # Usa il fuso orario dinamico per l'ora italiana
+    now = datetime.now(ITALY_TZ)
     date_offset = -1 if context.args and context.args[0] == "yesterday" else 0
     target_date = (now + timedelta(days=date_offset)).strftime("%Y-%m-%d")
     
@@ -319,7 +319,7 @@ async def vincitore(update: Update, context: CallbackContext):
         await update.message.reply_text(f"❌ Il mercato era chiuso il {target_date}. Nessuna vincita calcolata.")
         return
     
-    # Se i risultati sono già stati calcolati per questa data, restituiscili
+       # Se i risultati sono già stati calcolati per questa data, restituiscili
     c.execute("SELECT result FROM winners WHERE date = ?", (target_date,))
     existing_result = c.fetchone()
     if existing_result:
@@ -400,7 +400,6 @@ async def vincitore(update: Update, context: CallbackContext):
         return
 
     # Ramo standard: nessun perfect guesser
-    # Calcola differenze e ordina le previsioni
     predictions = [
         (user_id, username, prediction, round(abs(prediction - closing_percentage), 2))
         for user_id, username, prediction in predictions
