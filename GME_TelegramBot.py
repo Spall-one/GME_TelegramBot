@@ -10,39 +10,36 @@ import nest_asyncio
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackContext
-from datetime import datetime, time, timezone, timedelta
-
+from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo  # Import per il fuso orario dinamico
 
 nest_asyncio.apply()
 
 # Configura logging
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# Imposta il tuo token Telegram
-import os
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
 # Orari di apertura e chiusura delle scommesse
-START_TIME = time(0, 0)  # Apertura a mezzanotte
-CUTOFF_TIME = time(15, 30)  # Chiusura alle 15:30
+START_TIME = time(0, 0)           # Apertura a mezzanotte
+CUTOFF_TIME = time(15, 30)         # Chiusura alle 15:30
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GME_TICKER = "GME"
 API_KEY = os.getenv("FINNHUB_API_KEY")  # Finnhub API Key
-GROUP_TOPIC_CHAT_ID = -1001425180088 # ID del topic (o chat) in cui inviare i reminder
+GROUP_TOPIC_CHAT_ID = -1001425180088   # ID del topic (o chat) in cui inviare i reminder
 CUTOFF_TIME_STR = f"{CUTOFF_TIME.hour:02d}:{CUTOFF_TIME.minute:02d}" 
 
-# Imposta il fuso orario italiano
-ITALY_TZ = timezone(timedelta(hours=1))
+# Imposta il fuso orario italiano in modo dinamico (gestisce automaticamente DST)
+ITALY_TZ = ZoneInfo("Europe/Rome")
 MARKET_CLOSE_TIME = time(22, 10)
-
-
 
 ADMIN_CHAT_ID = 68001743  # Il tuo user ID
 
 app = Flask(__name__)
+
 
 @app.route('/')
 def home():
