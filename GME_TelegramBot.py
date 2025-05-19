@@ -171,10 +171,14 @@ async def bet(update: Update, context: CallbackContext):
     existing_bet = c.fetchone()
     if existing_bet:
         try:
-            await update.message.delete()
+         await update.message.delete()
         except Exception as e:
-            logging.error(f"Errore nel cancellare il messaggio: {e}")
-        await update.message.reply_text("⚠️ Hai già scommesso oggi! Non puoi cambiarla.")
+         logging.error(f"Errore nel cancellare il messaggio: {e}")
+    
+         await context.bot.send_message(
+          chat_id=update.effective_chat.id,
+            text="⚠️ Hai già scommesso oggi! Non puoi cambiarla."
+            )
         return
 
     # Controllo per scommesse identiche da utenti diversi
@@ -182,14 +186,15 @@ async def bet(update: Update, context: CallbackContext):
     same_prediction = c.fetchone()
     if same_prediction:
         try:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="⚠️ Questo valore è già stato scommesso da un altro utente! Prova con un valore diverso."
-            )
-            await update.message.delete()
+         await update.message.delete()
         except Exception as e:
-            logging.error(f"Errore nel gestire la scommessa duplicata: {e}")
-        return  # << CORRETTO: ora è dentro il blocco giusto
+         logging.error(f"Errore nel cancellare il messaggio: {e}")
+    
+         await context.bot.send_message(
+             chat_id=update.effective_chat.id,
+             text="⚠️ Questo valore è già stato scommesso da un altro utente! Prova con un valore diverso."
+            )
+        return
 
     # Salva la scommessa nel database
     c.execute("INSERT INTO predictions (user_id, username, prediction, date) VALUES (?, ?, ?, ?)",
