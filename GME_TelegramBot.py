@@ -178,7 +178,7 @@ async def bet(update: Update, context: CallbackContext):
         return
 
     # Controllo per scommesse identiche da utenti diversi
-      c.execute("SELECT 1 FROM predictions WHERE prediction = ? AND date = ?", (prediction, today_date))
+    c.execute("SELECT 1 FROM predictions WHERE prediction = ? AND date = ?", (prediction, today_date))
     same_prediction = c.fetchone()
     if same_prediction:
         try:
