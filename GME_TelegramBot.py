@@ -178,18 +178,18 @@ async def bet(update: Update, context: CallbackContext):
         return
 
     # Controllo per scommesse identiche da utenti diversi
-    c.execute("SELECT 1 FROM predictions WHERE prediction = ? AND date = ?", (prediction, today_date))
+      c.execute("SELECT 1 FROM predictions WHERE prediction = ? AND date = ?", (prediction, today_date))
     same_prediction = c.fetchone()
     if same_prediction:
-     try:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="⚠️ Questo valore è già stato scommesso da un altro utente! Prova con un valore diverso."
-        )
-        await update.message.delete()
-     except Exception as e:
-        logging.error(f"Errore nel gestire la scommessa duplicata: {e}")
-    return
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="⚠️ Questo valore è già stato scommesso da un altro utente! Prova con un valore diverso."
+            )
+            await update.message.delete()
+        except Exception as e:
+            logging.error(f"Errore nel gestire la scommessa duplicata: {e}")
+        return  # << CORRETTO: ora è dentro il blocco giusto
 
     # Salva la scommessa nel database
     c.execute("INSERT INTO predictions (user_id, username, prediction, date) VALUES (?, ?, ?, ?)",
