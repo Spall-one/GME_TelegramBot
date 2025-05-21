@@ -171,14 +171,15 @@ async def bet(update: Update, context: CallbackContext):
     existing_bet = c.fetchone()
     if existing_bet:
         try:
-         await update.message.delete()
+            await update.message.delete()
         except Exception as e:
-         logging.error(f"Errore nel cancellare il messaggio: {e}")
+            logging.error(f"Errore nel cancellare il messaggio: {e}")
     
-         await context.bot.send_message(
-          chat_id=update.effective_chat.id,
+        # Questo messaggio deve uscire SEMPRE
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
             text="⚠️ Hai già scommesso oggi! Non puoi cambiarla."
-            )
+        )
         return
 
     # Controllo per scommesse identiche da utenti diversi
@@ -186,14 +187,15 @@ async def bet(update: Update, context: CallbackContext):
     same_prediction = c.fetchone()
     if same_prediction:
         try:
-         await update.message.delete()
+            await update.message.delete()
         except Exception as e:
-         logging.error(f"Errore nel cancellare il messaggio: {e}")
+            logging.error(f"Errore nel cancellare il messaggio: {e}")
     
-         await context.bot.send_message(
-             chat_id=update.effective_chat.id,
-             text="⚠️ Questo valore è già stato scommesso da un altro utente! Prova con un valore diverso."
-            )
+        # Anche qui: deve SEMPRE apparire
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="⚠️ Questo valore è già stato scommesso da un altro utente! Prova con un valore diverso."
+        )
         return
 
     # Salva la scommessa nel database
@@ -668,9 +670,13 @@ async def reminder_scheduler(chat_id: int):
 
 
 # Main function
+        
+# Main async
 async def main_async():
     global app_instance
     app_instance = Application.builder().token(TOKEN).build()
+
+    # Aggiunta handler comandi
     app_instance.add_handler(CommandHandler("bet", bet))
     app_instance.add_handler(CommandHandler("vincitore", vincitore))
     app_instance.add_handler(CommandHandler("betTEST", betTEST))
@@ -678,21 +684,33 @@ async def main_async():
     app_instance.add_handler(CommandHandler("scommesse", scommesse))
     app_instance.add_handler(CommandHandler("bilancio", bilancio))
     app_instance.add_handler(CommandHandler("testVincitore", testVincitore))
+
     logging.info("Bot avviato con successo!")
-    
-    # Avvia il reminder scheduler come task in background
-    asyncio.create_task(reminder_scheduler(GROUP_TOPIC_CHAT_ID))
-    
-    # Avvia il polling del bot. Usa close_loop=False per evitare che il loop venga chiuso.
-    await app_instance.run_polling(allowed_updates=Update.ALL_TYPES,
-                                   drop_pending_updates=True,
-                                   close_loop=False)
+
+    # Avvia reminder in background solo se è una coroutine valida
+    try:
+        task = reminder_scheduler(GROUP_TOPIC_CHAT_ID)
+        if asyncio.iscoroutine(task):
+            asyncio.create_task(task)
+        else:
+            logging.error("reminder_scheduler non ha restituito una coroutine valida.")
+    except Exception as e:
+        logging.error(f"Errore nell'avvio del reminder scheduler: {e}")
+
+    # Polling del bot
+    await app_instance.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+        close_loop=False
+    )
+
 
 def main():
     try:
         asyncio.run(main_async())
     except Exception as e:
-        logging.error(f"Errore nel main: {e}")
+        logging.exception("Errore fatale nel main:")
+
 
 if __name__ == "__main__":
     main()
