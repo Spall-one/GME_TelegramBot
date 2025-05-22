@@ -312,188 +312,177 @@ from telegram.constants import ParseMode
 
 async def vincitore(update: Update, context: CallbackContext):
     """
-    Funzione per determinare il vincitore e aggiornare i bilanci dei giocatori.
-    Nuova modalità: se un utente azzecca esattamente la chiusura (diff arrotondata a 0),
-    guadagna le parti fisse (150+100+50 = 300€) e riceve anche l'intero importo della parte variabile
-    persa dai giocatori della metà inferiore della classifica.
-    Il messaggio invia anche l'elenco dei perdenti con l’importo perso.
+    Calcola i risultati della giornata e aggiorna i bilanci dei giocatori.
+
+    Modalità:
+    - Se un giocatore ha indovinato esattamente la chiusura (diff = 0.00%), vince l’intero montepremi.
+    - Altrimenti, punteggi assegnati in base alla classifica con premi/penalità fissi + variabili.
     """
-    # Usa il fuso orario dinamico per l'ora italiana
+    # Recupera la data target (oggi o ieri)
     now = datetime.now(ITALY_TZ)
     date_offset = -1 if context.args and context.args[0] == "yesterday" else 0
     target_date = (now + timedelta(days=date_offset)).strftime("%Y-%m-%d")
-    
-    # Controlli preliminari
+
+    # Controlli pre-esecuzione
     if date_offset == 0 and now.time() < MARKET_CLOSE_TIME:
         await update.message.reply_text("⏳ Il mercato è ancora aperto! Puoi controllare il vincitore dopo le 22:10.")
         return
     if target_date in CHIUSURE_MERCATO:
         await update.message.reply_text(f"❌ Il mercato era chiuso il {target_date}. Nessuna vincita calcolata.")
         return
-    
-       # Se i risultati sono già stati calcolati per questa data, restituiscili
+
+    # Evita ricalcoli se i risultati sono già stati salvati
     c.execute("SELECT result FROM winners WHERE date = ?", (target_date,))
     existing_result = c.fetchone()
     if existing_result:
         await update.message.reply_text(existing_result[0], parse_mode="HTML")
         return
-    
-    # Recupera tutte le previsioni per la data target
+
+    # Recupera le scommesse del giorno
     c.execute("SELECT user_id, username, prediction FROM predictions WHERE date = ?", (target_date,))
     predictions = c.fetchall()
     if not predictions:
         await update.message.reply_text(f"Nessuna previsione registrata per il {target_date}.")
         return
-    
-    # Recupera la variazione di GME
+
+    # Recupera la variazione effettiva di GME
     closing_percentage = get_gme_closing_percentage()
     if closing_percentage is None:
         await update.message.reply_text("⚠️ La variazione percentuale di GME non è ancora disponibile. Riprova più tardi.")
         return
 
-    # Controllo per perfect guess: se la differenza è 0 (arrotondata a 2 decimali)
-    perfect_guesser = None
-    for user_id, username, prediction in predictions:
-        if round(abs(prediction - closing_percentage), 2) == 0:
-            perfect_guesser = (user_id, username, prediction)
-            break
+    # 🔍 Controllo per chi ha azzeccato perfettamente la chiusura
+    perfect_guesser = next(((uid, uname, pred) for uid, uname, pred in predictions
+                             if round(abs(pred - closing_percentage), 2) == 0), None)
 
     if perfect_guesser:
-        # Calcola la parte variabile persa dalla metà inferiore della classifica
+        # Se c'è un perfect guesser, calcolo il bottino completo: parte fissa + variabile
         predictions_with_diff = [
-            (user_id, username, prediction, round(abs(prediction - closing_percentage), 2))
-            for user_id, username, prediction in predictions
+            (uid, uname, pred, round(abs(pred - closing_percentage), 2))
+            for uid, uname, pred in predictions
         ]
         predictions_with_diff.sort(key=lambda x: x[3])
+
         num_players = len(predictions_with_diff)
-        middle_index = num_players // 2  # Se dispari, il giocatore centrale non contribuisce al pool
+        middle_index = num_players // 2
         variable_pool = 0
-        losers_info = []  # Lista di tuple (user_id, username, importo perso)
+        losers_info = []
+
+        # Calcolo la parte variabile persa dai peggiori
         for i in range(middle_index):
             diff_top = predictions_with_diff[i][3]
             diff_bottom = predictions_with_diff[-(i + 1)][3]
-            bonus = round((diff_bottom - diff_top) * 5, 2)  # risk_multiplier = 5
+            bonus = round((diff_bottom - diff_top) * 5, 2)
             lost_amount = abs(bonus)
             variable_pool += lost_amount
             loser_id = predictions_with_diff[-(i + 1)][0]
             loser_username = predictions_with_diff[-(i + 1)][1]
             losers_info.append((loser_id, loser_username, lost_amount))
-        
-        fixed_total = 150 + 100 + 50  # Totale parti fisse = 300 €
+
+        # Assegna tutto al perfect guesser
+        fixed_total = 300
         total_prize = fixed_total + variable_pool
-        
-        # Aggiorna il bilancio del perfect guesser
         user_id_pg, username_pg, _ = perfect_guesser
+
         c.execute("""
             INSERT INTO balances (user_id, username, balance)
             VALUES (?, ?, ROUND(?, 2))
-            ON CONFLICT(username) DO UPDATE SET
+            ON CONFLICT(user_id) DO UPDATE SET
                 balance = ROUND(balance + ?, 2),
-                user_id = excluded.user_id
+                username = excluded.username
         """, (user_id_pg, username_pg, total_prize, total_prize))
 
-
-        # Aggiorna il bilancio dei perdenti (sottraendo l'importo perso)
+        # Penalizza i perdenti
         for loser_id, loser_username, lost_amount in losers_info:
             c.execute("""
                 INSERT INTO balances (user_id, username, balance)
                 VALUES (?, ?, ROUND(?, 2))
-                ON CONFLICT(username) DO UPDATE SET
+                ON CONFLICT(user_id) DO UPDATE SET
                     balance = ROUND(balance - ?, 2),
-                    user_id = excluded.user_id
+                    username = excluded.username
             """, (loser_id, loser_username, -lost_amount, lost_amount))
 
-
-
         conn.commit()
-        
-        # Costruisci il messaggio speciale
+
+        # Messaggio di output per il perfect guess
         message = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n\n"
         message += f"🎉 <b>Perfetto!</b> @{username_pg} ha azzeccato al 100% la chiusura e si becca tutto: <b>{total_prize}€</b>!\n\n"
         message += "<b>Elenco dei perdenti:</b>\n"
-        for loser_id, loser_username, lost in losers_info:
-            message += f"• @{loser_username}: perso <i>{lost}€</i>\n"
-        
+        for _, uname, lost in losers_info:
+            message += f"• @{uname}: perso <i>{lost}€</i>\n"
+
         c.execute("INSERT INTO winners (date, result) VALUES (?, ?)", (target_date, message))
         conn.commit()
         await update.message.reply_text(message, parse_mode="HTML")
         return
 
-    # Ramo standard: nessun perfect guesser
+    # 🧮 Ramo standard (nessun perfect guesser): classifica + punteggi
     predictions = [
-        (user_id, username, prediction, round(abs(prediction - closing_percentage), 2))
-        for user_id, username, prediction in predictions
+        (uid, uname, pred, round(abs(pred - closing_percentage), 2))
+        for uid, uname, pred in predictions
     ]
     predictions.sort(key=lambda x: x[3])
     num_players = len(predictions)
+
+    # Premi/penalità fisse
     rewards = {1: 150, 2: 100, 3: 50}
     penalties = {-1: -150, -2: -100, -3: -50}
     risk_multiplier = 5
-    balance_changes = {username: [0, 0] for _, username, _, _ in predictions}
-    
+
+    # Dizionario per sommare fisso e variabile
+    balance_changes = {uname: [0, 0] for _, uname, _, _ in predictions}
+
+    # Assegna le parti fisse
     for i in range(3):
-        username_top = predictions[i][1]
-        balance_changes[username_top][0] += rewards[i + 1]
-        username_bottom = predictions[-(i + 1)][1]
-        balance_changes[username_bottom][0] += penalties[-(i + 1)]
-    
+        balance_changes[predictions[i][1]][0] += rewards[i + 1]
+        balance_changes[predictions[-(i + 1)][1]][0] += penalties[-(i + 1)]
+
+    # Assegna le parti variabili in base alla distanza
     middle_index = num_players // 2
     for i in range(middle_index):
-        user_id_top, username_top, pred_top, diff_top = predictions[i]
-        user_id_bottom, username_bottom, pred_bottom, diff_bottom = predictions[-(i + 1)]
-        variable_bonus = round((diff_bottom - diff_top) * risk_multiplier, 2)
-        balance_changes[username_top][1] += variable_bonus
-        balance_changes[username_bottom][1] -= variable_bonus
-    
+        diff_top = predictions[i][3]
+        diff_bottom = predictions[-(i + 1)][3]
+        variable = round((diff_bottom - diff_top) * risk_multiplier, 2)
+        balance_changes[predictions[i][1]][1] += variable
+        balance_changes[predictions[-(i + 1)][1]][1] -= variable
+
     if num_players % 2 == 1:
-        mid_username = predictions[middle_index][1]
-        balance_changes[mid_username] = [0, 0]
-    
-    # Aggiorna i bilanci di tutti i giocatori nel ramo standard
-    for username, changes in balance_changes.items():
-        total_score = round(changes[0] + changes[1], 2)
-        user_id_val = next(u_id for u_id, usr, _, _ in predictions if usr == username)
+        balance_changes[predictions[middle_index][1]] = [0, 0]
+
+    # 🔄 Aggiorna i bilanci nel DB
+    for uname, (fixed, variable) in balance_changes.items():
+        total_score = round(fixed + variable, 2)
+        uid = next(uid for uid, u, _, _ in predictions if u == uname)
         c.execute("""
             INSERT INTO balances (user_id, username, balance)
             VALUES (?, ?, ROUND(?, 2))
-            ON CONFLICT(username) DO UPDATE SET
+            ON CONFLICT(user_id) DO UPDATE SET
                 balance = ROUND(balance + ?, 2),
-                user_id = excluded.user_id
-        """, (user_id_val, username, total_score, total_score))
+                username = excluded.username
+        """, (uid, uname, total_score, total_score))
 
-    
-    # Costruisci il messaggio finale con la classifica
+    conn.commit()
+
+    # 📝 Crea messaggio finale con classifica
     sorted_results = sorted(balance_changes.items(), key=lambda x: -(x[1][0] + x[1][1]))
     message = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n\n"
-    for i, (username, changes) in enumerate(sorted_results):
-        user_id_val = next(u_id for u_id, usr, _, _ in predictions if usr == username)
-        prediction = next(pred for _, usr, pred, _ in predictions if usr == username)
-        diff = round(abs(prediction - closing_percentage), 2)
+    for i, (uname, (fixed, variable)) in enumerate(sorted_results):
+        pred = next(p for _, u, p, _ in predictions if u == uname)
+        diff = round(abs(pred - closing_percentage), 2)
+        total = round(fixed + variable, 2)
         rank = i + 1
-        fixed_part, variable_part = changes
-        total_score = round(fixed_part + variable_part, 2)
-        if rank <= 3:
-            message += (
-                f"🏆 <b>{rank}° posto</b>: @{username} ha previsto <i>{prediction:.2f}%</i> "
-                f"(📏 Diff: <i>{diff:.2f}%</i>), Fisso: <b>{fixed_part}€</b>, "
-                f"Variabile: <b>{variable_part}€</b>, Totale: <b>{total_score}€</b>\n"
-            )
-        elif rank > num_players - 3:
-            message += (
-                f"💀 <b>{rank}° posto</b>: @{username} ha previsto <i>{prediction:.2f}%</i> "
-                f"(📏 Diff: <i>{diff:.2f}%</i>), Fisso: <b>{fixed_part}€</b>, "
-                f"Variabile: <b>{variable_part}€</b>, Totale: <b>{total_score}€</b>\n"
-            )
-        else:
-            message += (
-                f"⚖️ <b>{rank}° posto</b>: @{username} ha previsto <i>{prediction:.2f}%</i> "
-                f"(📏 Diff: <i>{diff:.2f}%</i>), Fisso: <b>{fixed_part}€</b>, "
-                f"Variabile: <b>{variable_part}€</b>, Totale: <b>{total_score}€</b>\n"
-            )
-    
+        icon = "🏆" if rank <= 3 else "💀" if rank > num_players - 3 else "⚖️"
+        message += (
+            f"{icon} <b>{rank}° posto</b>: @{uname} ha previsto <i>{pred:.2f}%</i> "
+            f"(📏 Diff: <i>{diff:.2f}%</i>), Fisso: <b>{fixed}€</b>, "
+            f"Variabile: <b>{variable}€</b>, Totale: <b>{total}€</b>\n"
+        )
+
+    # Salva il messaggio nei risultati e invia
     c.execute("INSERT INTO winners (date, result) VALUES (?, ?)", (target_date, message))
     conn.commit()
     await update.message.reply_text(message, parse_mode="HTML")
+
 
 
 
