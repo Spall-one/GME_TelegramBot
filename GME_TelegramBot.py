@@ -94,7 +94,7 @@ conn.commit()
 
 # Lista di giorni in cui il mercato è chiuso (festività, chiusure programmate)
 CHIUSURE_MERCATO = {
-    "2025-01-01", "2025-07-04", "2025-12-25", "2025-12-26", "2025-11-27", "2025-04-18"
+    "2025-01-01", "2025-07-04", "2025-12-25", "2025-12-26", "2025-11-27", "2025-04-18", "2025-05-26"
 }
 
 # Funzione per ottenere la variazione percentuale attuale di GME
@@ -178,6 +178,7 @@ async def bet(update: Update, context: CallbackContext):
         # Questo messaggio deve uscire SEMPRE
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
+            message_thread_id=update.message.message_thread_id,
             text="⚠️ Hai già scommesso oggi! Non puoi cambiarla."
         )
         return
@@ -194,8 +195,9 @@ async def bet(update: Update, context: CallbackContext):
         # Anche qui: deve SEMPRE apparire
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
+            message_thread_id=update.message.message_thread_id,
             text="⚠️ Questo valore è già stato scommesso da un altro utente! Prova con un valore diverso."
-        )
+         )
         return
 
     # Salva la scommessa nel database
@@ -382,19 +384,24 @@ async def vincitore(update: Update, context: CallbackContext):
         
         # Aggiorna il bilancio del perfect guesser
         user_id_pg, username_pg, _ = perfect_guesser
-        c.execute(
-            "INSERT INTO balances (user_id, username, balance) VALUES (?, ?, ROUND(?, 2)) "
-            "ON CONFLICT(username) DO UPDATE SET balance = ROUND(balance + ?, 2)",
-            (user_id_pg, username_pg, total_prize, total_prize)
-        )
-        
+        c.execute("""
+            INSERT INTO balances (user_id, username, balance)
+            VALUES (?, ?, ROUND(?, 2))
+            ON CONFLICT(user_id) DO UPDATE SET
+                balance = ROUND(balance + ?, 2),
+                username = excluded.username
+        """, (user_id_pg, username_pg, total_prize, total_prize))
+
         # Aggiorna il bilancio dei perdenti (sottraendo l'importo perso)
         for loser_id, loser_username, lost_amount in losers_info:
-            c.execute(
-                "INSERT INTO balances (user_id, username, balance) VALUES (?, ?, ROUND(0 - ?, 2)) "
-                "ON CONFLICT(username) DO UPDATE SET balance = ROUND(balance - ?, 2)",
-                (loser_id, loser_username, lost_amount, lost_amount)
-            )
+            c.execute("""
+                INSERT INTO balances (user_id, username, balance)
+                VALUES (?, ?, ROUND(?, 2))
+                ON CONFLICT(user_id) DO UPDATE SET
+                    balance = ROUND(balance - ?, 2),
+                    username = excluded.username
+            """, (loser_id, loser_username, -lost_amount, lost_amount))  # NOTA: -lost_amount nel primo valore, positivo nel secondo
+
         conn.commit()
         
         # Costruisci il messaggio speciale
@@ -443,12 +450,13 @@ async def vincitore(update: Update, context: CallbackContext):
     for username, changes in balance_changes.items():
         total_score = round(changes[0] + changes[1], 2)
         user_id_val = next(u_id for u_id, usr, _, _ in predictions if usr == username)
-        c.execute(
-            "INSERT INTO balances (user_id, username, balance) VALUES (?, ?, ROUND(?, 2)) "
-            "ON CONFLICT(username) DO UPDATE SET balance = ROUND(balance + ?, 2)",
-            (user_id_val, username, total_score, total_score)
-        )
-    conn.commit()
+        c.execute("""
+            INSERT INTO balances (user_id, username, balance)
+            VALUES (?, ?, ROUND(?, 2))
+            ON CONFLICT(user_id) DO UPDATE SET
+                balance = ROUND(balance + ?, 2),
+                username = excluded.username
+        """, (user_id_val, username, total_score, total_score))
     
     # Costruisci il messaggio finale con la classifica
     sorted_results = sorted(balance_changes.items(), key=lambda x: -(x[1][0] + x[1][1]))
@@ -479,7 +487,6 @@ async def vincitore(update: Update, context: CallbackContext):
                 f"Variabile: <b>{variable_part}€</b>, Totale: <b>{total_score}€</b>\n"
             )
     
-    conn.commit()
     c.execute("INSERT INTO winners (date, result) VALUES (?, ?)", (target_date, message))
     conn.commit()
     await update.message.reply_text(message, parse_mode="HTML")
