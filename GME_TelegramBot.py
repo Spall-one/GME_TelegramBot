@@ -387,20 +387,23 @@ async def vincitore(update: Update, context: CallbackContext):
         c.execute("""
             INSERT INTO balances (user_id, username, balance)
             VALUES (?, ?, ROUND(?, 2))
-            ON CONFLICT(user_id) DO UPDATE SET
+            ON CONFLICT(username) DO UPDATE SET
                 balance = ROUND(balance + ?, 2),
-                username = excluded.username
+                user_id = excluded.user_id
         """, (user_id_pg, username_pg, total_prize, total_prize))
+
 
         # Aggiorna il bilancio dei perdenti (sottraendo l'importo perso)
         for loser_id, loser_username, lost_amount in losers_info:
             c.execute("""
                 INSERT INTO balances (user_id, username, balance)
                 VALUES (?, ?, ROUND(?, 2))
-                ON CONFLICT(user_id) DO UPDATE SET
+                ON CONFLICT(username) DO UPDATE SET
                     balance = ROUND(balance - ?, 2),
-                    username = excluded.username
-            """, (loser_id, loser_username, -lost_amount, lost_amount))  # NOTA: -lost_amount nel primo valore, positivo nel secondo
+                    user_id = excluded.user_id
+            """, (loser_id, loser_username, -lost_amount, lost_amount))
+
+
 
         conn.commit()
         
@@ -453,10 +456,11 @@ async def vincitore(update: Update, context: CallbackContext):
         c.execute("""
             INSERT INTO balances (user_id, username, balance)
             VALUES (?, ?, ROUND(?, 2))
-            ON CONFLICT(user_id) DO UPDATE SET
+            ON CONFLICT(username) DO UPDATE SET
                 balance = ROUND(balance + ?, 2),
-                username = excluded.username
+                user_id = excluded.user_id
         """, (user_id_val, username, total_score, total_score))
+
     
     # Costruisci il messaggio finale con la classifica
     sorted_results = sorted(balance_changes.items(), key=lambda x: -(x[1][0] + x[1][1]))
