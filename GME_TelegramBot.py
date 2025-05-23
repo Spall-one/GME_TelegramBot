@@ -92,6 +92,12 @@ c.execute('''CREATE TABLE IF NOT EXISTS winners (
             )''')
 conn.commit()
 
+c.execute('''CREATE TABLE IF NOT EXISTS bans (
+                user_id INTEGER PRIMARY KEY,
+                ban_until TEXT
+            )''')
+conn.commit()
+
 # Lista di giorni in cui il mercato è chiuso (festività, chiusure programmate)
 CHIUSURE_MERCATO = {
     "2025-01-01", "2025-07-04", "2025-12-25", "2025-12-26", "2025-11-27", "2025-04-18", "2025-05-26"
@@ -147,6 +153,16 @@ async def bet(update: Update, context: CallbackContext):
     now = datetime.now(ITALY_TZ)
     today_date = now.strftime("%Y-%m-%d")
     weekday = now.weekday()  # 0 = Lunedì, 6 = Domenica
+
+    # Controllo se l'utente è bannato
+    c.execute("SELECT ban_until FROM bans WHERE user_id = ?", (user_id,))
+    ban_record = c.fetchone()
+    if ban_record:
+        ban_until = datetime.strptime(ban_record[0], "%Y-%m-%d").date()
+        today = datetime.now(ITALY_TZ).date()
+        if today <= ban_until:
+            await update.message.reply_text(f"🚫 Sei bannato fino al {ban_until.strftime('%d/%m/%Y')}. Non puoi scommettere.")
+            return
 
     if not username:
         await update.message.reply_text("⚠️ Non posso registrare la tua scommessa perché non hai un username su Telegram! Impostane uno e riprova.")
@@ -309,6 +325,7 @@ async def scommesse(update: Update, context: CallbackContext):
 
 
 from telegram.constants import ParseMode
+
 async def vincitore(update: Update, context: CallbackContext):
     now = datetime.now(ITALY_TZ)
     date_offset = -1 if context.args and context.args[0] == "yesterday" else 0
@@ -456,7 +473,143 @@ async def vincitore(update: Update, context: CallbackContext):
 
 
 
+async def istruzioni(update: Update, context: CallbackContext):
+    messaggio = (
+        "📘 <b>Istruzioni del GME Bot</b>\n\n"
+        "Benvenuto nel bot per scommettere sulla variazione giornaliera del titolo GME 📈.\n\n"
+        "Ogni giorno di mercato aperto puoi fare la tua previsione sulla variazione % del titolo usando il comando <b>/bet</b>.\n"
+        "Le previsioni si chiudono alle <b>15:30</b>. I risultati vengono calcolati dopo la chiusura del mercato alle <b>22:10</b>.\n\n"
+        "<b>🧮 Sistema di punteggio:</b>\n"
+        "• Il punteggio totale è composto da due parti: <b>fissa</b> + <b>variabile</b>\n"
+        "• <b>Parte fissa:</b>\n"
+        "   - 🥇 1° classificato: +150€\n"
+        "   - 🥈 2° classificato: +100€\n"
+        "   - 🥉 3° classificato: +50€\n"
+        "   - 💀 Terzultimo: -50€\n"
+        "   - 💀 Penultimo: -100€\n"
+        "   - 💀 Ultimo: -150€\n"
+        "• <b>Parte variabile:</b>\n"
+        "   - Ogni giocatore (compresi primi e ultimi) guadagna o perde un importo calcolato in base alla differenza tra il proprio errore e quello del proprio opposto in classifica.\n"
+        "   - Questa differenza viene moltiplicata per un <b>moltiplicatore di rischio 5x</b>\n"
+        "   - Più sei preciso rispetto al tuo opposto, più guadagni a sue spese.\n\n"
+        "🎯 <b>Perfect guess:</b>\n"
+        "Se un utente azzecca esattamente la chiusura (differenza = 0), vince:\n"
+        "• Tutte le parti fisse (300€ totali)\n"
+        "• L'intera parte variabile persa dalla metà inferiore della classifica\n\n"
+        "<b>📋 Comandi disponibili:</b>\n"
+        "• /bet <percentuale> – Registra la tua scommessa del giorno\n"
+        "• /scommesse – Mostra le scommesse della giornata\n"
+        "• /vincitore [yesterday] – Mostra i risultati (di oggi o di ieri)\n"
+        "• /bilancio – Mostra il tuo bilancio\n"
+        "• /classifica – Mostra la classifica aggiornata\n"
+        "• /testVincitore – Simula i punteggi con valori casuali\n"
+        "• /istruzioni – Mostra questo messaggio\n"
+        "• /id – Registra il tuo ID Telegram per la gestione tecnica\n"
+        "• /ban username giorni - Solo il Re dei Bot 👑 (l'amministratore) può usarlo. Serve per bloccare un utente dallo scommettere per un numero di giorni specificato.\n"
+        "• /bannati - Elenca tutti gli utenti attualmente bannati e quanto manca allo sblocco automatico.\n \n"
+        "Buona fortuna e che vinca il più preciso! 🧠💸"
+    )
+    await update.message.reply_text(messaggio, parse_mode="HTML")
 
+async def registra_id(update: Update, context: CallbackContext):
+    user = update.message.from_user
+    user_id = user.id
+    username = user.username or "Sconosciuto"
+
+    # Messaggio privato all'utente
+    await update.message.reply_text("✅ Ok! ID registrato.")
+
+    # Messaggio nella chat bot admin
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=f"🆔 ID registrato: @{username} → {user_id}"
+        )
+    except Exception as e:
+        logging.error(f"Errore nell'invio dell'ID: {e}")
+
+
+async def ban(update: Update, context: CallbackContext):
+    # Solo l'admin può eseguire il comando
+    if update.effective_user.id != ADMIN_CHAT_ID:
+        await update.message.reply_text("⛔ Solo il Re dei Bot può bannare gli utenti.")
+        return
+
+    if len(context.args) != 2:
+        await update.message.reply_text("❗ Usa il comando così: /ban username giorni")
+        return
+
+    username = context.args[0].lstrip("@")
+    try:
+        giorni = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("❗ Il numero di giorni deve essere un numero intero.")
+        return
+
+    c.execute("SELECT user_id FROM balances WHERE username = ?", (username,))
+    result = c.fetchone()
+    if not result:
+        await update.message.reply_text(f"⚠️ Nessun utente trovato con username @{username}.")
+        return
+
+    user_id = result[0]
+    ban_until = (datetime.now(ITALY_TZ).date() + timedelta(days=giorni)).strftime("%Y-%m-%d")
+    c.execute("INSERT OR REPLACE INTO bans (user_id, ban_until) VALUES (?, ?)", (user_id, ban_until))
+    conn.commit()
+
+    await update.message.reply_text(f"✅ L'utente @{username} è stato bannato fino al {ban_until}.")
+
+
+
+async def unban(update: Update, context: CallbackContext):
+    if update.message.from_user.id != ADMIN_CHAT_ID:
+        await update.message.reply_text("❌ Non hai i permessi per usare questo comando.")
+        return
+
+    try:
+        username = context.args[0].lstrip("@")
+    except IndexError:
+        await update.message.reply_text("⚠️ Usa il comando così: /unban username")
+        return
+
+    c.execute("SELECT user_id FROM balances WHERE username = ?", (username,))
+    res = c.fetchone()
+    if not res:
+        await update.message.reply_text("❌ Utente non trovato.")
+        return
+    user_id = res[0]
+    c.execute("DELETE FROM bans WHERE user_id = ?", (user_id,))
+
+
+    await update.message.reply_text(f"✅ Il ban per @{username} è stato rimosso.")
+    
+async def bannati(update: Update, context: CallbackContext):
+    today = datetime.now(ITALY_TZ).date()
+
+    # Recupera tutti i ban ancora attivi
+    c.execute("SELECT user_id, ban_until FROM bans")
+    results = c.fetchall()
+
+    if not results:
+        await update.message.reply_text("✅ Nessun utente è attualmente bannato.")
+        return
+
+    message = "<b>🚫 Utenti attualmente bannati:</b>\n\n"
+    found = False
+    for user_id, ban_until in results:
+        ban_date = datetime.strptime(ban_until, "%Y-%m-%d").date()
+        if today <= ban_date:
+            c.execute("SELECT username FROM balances WHERE user_id = ?", (user_id,))
+            user_data = c.fetchone()
+            username = user_data[0] if user_data else f"ID {user_id}"
+            giorni_rimanenti = (ban_date - today).days
+            message += f"• @{username} — fino al {ban_date.strftime('%d/%m/%Y')} ({giorni_rimanenti} giorni rimanenti)\n"
+            found = True
+
+    if not found:
+        message = "✅ Nessun utente è attualmente bannato."
+
+    await update.message.reply_text(message, parse_mode="HTML")
 
 
 async def testVincitore(update: Update, context: CallbackContext):
@@ -654,6 +807,11 @@ async def main_async():
     app_instance.add_handler(CommandHandler("scommesse", scommesse))
     app_instance.add_handler(CommandHandler("bilancio", bilancio))
     app_instance.add_handler(CommandHandler("testVincitore", testVincitore))
+    app_instance.add_handler(CommandHandler("istruzioni", istruzioni))
+    app_instance.add_handler(CommandHandler("id", registra_id))
+    app_instance.add_handler(CommandHandler("ban", ban))
+    app_instance.add_handler(CommandHandler("unban", unban))
+    app_instance.add_handler(CommandHandler("bannati", bannati))
 
     logging.info("Bot avviato con successo!")
 
