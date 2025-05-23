@@ -322,14 +322,13 @@ async def vincitore(update: Update, context: CallbackContext):
         await update.message.reply_text(f"❌ Il mercato era chiuso il {target_date}. Nessuna vincita calcolata.")
         return
 
-    # Verifica se il risultato è già stato salvato in passato
+    # Verifica se il risultato è già calcolato
     c.execute("SELECT result FROM winners WHERE date = ?", (target_date,))
     existing_result = c.fetchone()
     if existing_result:
         await update.message.reply_text(existing_result[0], parse_mode="HTML")
         return
 
-    # Recupera previsioni dal database
     c.execute("SELECT user_id, username, prediction FROM predictions WHERE date = ?", (target_date,))
     predictions = c.fetchall()
     if not predictions:
@@ -341,56 +340,114 @@ async def vincitore(update: Update, context: CallbackContext):
         await update.message.reply_text("⚠️ La variazione percentuale di GME non è ancora disponibile. Riprova più tardi.")
         return
 
-    results = [(uid, uname, pred, round(abs(pred - closing_percentage), 2)) for uid, uname, pred in predictions]
-    results.sort(key=lambda x: x[3])
+    # Verifica perfect guess
+    perfect_guesser = None
+    for user_id, username, prediction in predictions:
+        if round(abs(prediction - closing_percentage), 2) == 0:
+            perfect_guesser = (user_id, username, prediction)
+            break
 
-    # Inizializza punteggi
+    if perfect_guesser:
+        players = [(uid, uname, pred, round(abs(pred - closing_percentage), 2)) for uid, uname, pred in predictions]
+        players.sort(key=lambda x: x[3])
+        num_players = len(players)
+        middle = num_players // 2
+        variable_pool = 0
+        losers_info = []
+
+        for i in range(middle):
+            diff_top = players[i][3]
+            diff_bottom = players[-(i + 1)][3]
+            bonus = round((diff_bottom - diff_top) * 5, 2)
+            loss = abs(bonus)
+            variable_pool += loss
+            loser_id = players[-(i + 1)][0]
+            loser_username = players[-(i + 1)][1]
+            losers_info.append((loser_id, loser_username, loss))
+
+        total_prize = 300 + variable_pool
+        pg_id, pg_username, _ = perfect_guesser
+
+        c.execute("""
+            INSERT INTO balances (user_id, username, balance)
+            VALUES (?, ?, ?)
+            ON CONFLICT(username) DO UPDATE SET
+                balance = ROUND(balance + ?, 2),
+                user_id = excluded.user_id
+        """, (pg_id, pg_username, round(total_prize, 2), round(total_prize, 2)))
+
+        for loser_id, loser_username, lost in losers_info:
+            c.execute("""
+                INSERT INTO balances (user_id, username, balance)
+                VALUES (?, ?, ?)
+                ON CONFLICT(username) DO UPDATE SET
+                    balance = ROUND(balance - ?, 2),
+                    user_id = excluded.user_id
+            """, (loser_id, loser_username, -round(lost, 2), round(lost, 2)))
+
+        conn.commit()
+
+        message = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n\n"
+        message += f"🎉 <b>Perfetto!</b> @{pg_username} ha azzeccato esattamente e vince <b>{round(total_prize, 2)}€</b>!\n\n"
+        message += "<b>Perdenti:</b>\n"
+        for _, usr, lost in losers_info:
+            message += f"• @{usr} ha perso <i>{round(lost, 2)}€</i>\n"
+
+        c.execute("INSERT INTO winners (date, result) VALUES (?, ?)", (target_date, message))
+        conn.commit()
+        await update.message.reply_text(message, parse_mode="HTML")
+        return
+
+    # Calcolo classico
+    players = [(uid, uname, pred, round(abs(pred - closing_percentage), 2)) for uid, uname, pred in predictions]
+    players.sort(key=lambda x: x[3])
+    num_players = len(players)
+
     rewards = {1: 150, 2: 100, 3: 50}
     penalties = {-1: -150, -2: -100, -3: -50}
     risk_multiplier = 5
-    balance_changes = {}
-    num_players = len(results)
+    changes = {uname: [0, 0] for _, uname, _, _ in players}
 
     for i in range(3):
-        uid_top, uname_top, _, _ = results[i]
-        balance_changes[uid_top] = balance_changes.get(uid_top, [uname_top, 0, 0])
-        balance_changes[uid_top][1] += rewards[i + 1]
+        changes[players[i][1]][0] += rewards[i + 1]
+        changes[players[-(i + 1)][1]][0] += penalties[-(i + 1)]
 
-        uid_bot, uname_bot, _, _ = results[-(i + 1)]
-        balance_changes[uid_bot] = balance_changes.get(uid_bot, [uname_bot, 0, 0])
-        balance_changes[uid_bot][1] += penalties[-(i + 1)]
+    for i in range(num_players // 2):
+        top = players[i]
+        bottom = players[-(i + 1)]
+        diff = round((bottom[3] - top[3]) * risk_multiplier, 2)
+        changes[top[1]][1] += diff
+        changes[bottom[1]][1] -= diff
 
-    middle = num_players // 2
-    for i in range(middle):
-        top = results[i]
-        bot = results[-(i + 1)]
-        delta = round((bot[3] - top[3]) * risk_multiplier, 2)
+    if num_players % 2 == 1:
+        mid = players[num_players // 2][1]
+        if mid not in changes:
+            changes[mid] = [0, 0]
 
-        balance_changes[top[0]][2] += delta
-        balance_changes[bot[0]][2] -= delta
+    for uname, (fixed, var) in changes.items():
+        total = round(fixed + var, 2)
+        user_id = next(uid for uid, u, _, _ in players if u == uname)
+        c.execute("""
+            INSERT INTO balances (user_id, username, balance)
+            VALUES (?, ?, ?)
+            ON CONFLICT(username) DO UPDATE SET
+                balance = ROUND(balance + ?, 2),
+                user_id = excluded.user_id
+        """, (user_id, uname, total, total))
 
-    # Aggiorna bilanci senza violare UNIQUE
+    # Messaggio finale
+    sorted_results = sorted(changes.items(), key=lambda x: -(x[1][0] + x[1][1]))
     message = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n\n"
-    sorted_changes = []
-
-    for uid, (uname, fixed, variable) in balance_changes.items():
-        total = round(fixed + variable, 2)
-        sorted_changes.append((uid, uname, fixed, variable, total))
-        try:
-            c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2), username = ? WHERE user_id = ?", (total, uname, uid))
-            if c.rowcount == 0:
-                c.execute("INSERT INTO balances (user_id, username, balance) VALUES (?, ?, ROUND(?, 2))", (uid, uname, total))
-        except sqlite3.IntegrityError as e:
-            logging.error(f"Errore aggiornando {uname}: {e}")
-            continue
-
-    conn.commit()
-
-    # Ordina risultati per punteggio
-    sorted_changes.sort(key=lambda x: -x[4])
-    for i, (uid, uname, fixed, var, total) in enumerate(sorted_changes, start=1):
-        symbol = "🏆" if i <= 3 else "💀" if i > num_players - 3 else "⚖️"
-        message += f"{symbol} <b>{i}° posto</b>: @{uname} - Fisso: <b>{fixed}€</b>, Variabile: <b>{var}€</b>, Totale: <b>{total}€</b>\n"
+    for i, (uname, (f, v)) in enumerate(sorted_results):
+        rank = i + 1
+        pred = next(p for _, u, p, _ in players if u == uname)
+        diff = round(abs(pred - closing_percentage), 2)
+        total = round(f + v, 2)
+        label = "🏆" if rank <= 3 else "💀" if rank > num_players - 3 else "⚖️"
+        message += (
+            f"{label} <b>{rank}°</b>: @{uname} → {pred:.2f}% "
+            f"(Diff: {diff:.2f}%) | Fisso: {f}€, Variabile: {v}€, Totale: {total}€\n"
+        )
 
     c.execute("INSERT INTO winners (date, result) VALUES (?, ?)", (target_date, message))
     conn.commit()
