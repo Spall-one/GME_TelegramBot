@@ -463,9 +463,10 @@ async def vincitore(update: Update, context: CallbackContext):
     # Output messaggio
     msg = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n\n"
     sorted_results = sorted(
-    changes.items(),
-    key=lambda x: -(float(x[1][0]) + float(x[1][1]))
+        changes.items(),
+        key=lambda item: -(item[1][0] + item[1][1])
     )
+
     for i, (uname, (f, v)) in enumerate(sorted_results):
         rank = i + 1
         pred = next(p for _, u, p, _ in players if u == uname)
