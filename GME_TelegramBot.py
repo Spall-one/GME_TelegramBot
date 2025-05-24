@@ -413,7 +413,7 @@ async def vincitore(update: Update, context: CallbackContext):
         await update.message.reply_text(msg, parse_mode="HTML")
         return
 
-    # Calcolo classico
+        # Calcolo classico
     players = [(uid, uname, pred, round(abs(pred - closing_percentage), 2)) for uid, uname, pred in predictions]
     players.sort(key=lambda x: x[3])
     num_players = len(players)
@@ -421,25 +421,34 @@ async def vincitore(update: Update, context: CallbackContext):
     rewards = {1: 150, 2: 100, 3: 50}
     penalties = {-1: -150, -2: -100, -3: -50}
     risk_multiplier = 5
-    changes = {uname: [0, 0] for _, uname, _, _ in players}
+    changes = {uid: [uname, 0, 0] for uid, uname, _, _ in players}  # uid: [username, fisso, variabile]
 
+    # Premi e penalità fissi
     for i in range(3):
-        changes[players[i][1]][0] += rewards[i + 1]
-        changes[players[-(i + 1)][1]][0] += penalties[-(i + 1)]
+        uid_top = players[i][0]
+        uid_bottom = players[-(i + 1)][0]
+        changes[uid_top][1] += rewards[i + 1]
+        changes[uid_bottom][1] += penalties[-(i + 1)]
 
+    # Parte variabile simmetrica
     for i in range(num_players // 2):
         top = players[i]
         bottom = players[-(i + 1)]
-        diff = round((bottom[3] - top[3]) * risk_multiplier, 2)
-        changes[top[1]][1] += diff
-        changes[bottom[1]][1] -= diff
+        diff_top = top[3]
+        diff_bottom = bottom[3]
+        delta = round((diff_bottom - diff_top) * risk_multiplier, 2)
 
+        changes[top[0]][2] += delta
+        changes[bottom[0]][2] -= delta
+
+    # Se dispari, resettare centrale
     if num_players % 2 == 1:
-        changes[players[num_players // 2][1]] = [0, 0]
+        mid_uid = players[num_players // 2][0]
+        changes[mid_uid][1] = 0
+        changes[mid_uid][2] = 0
 
-    # Update bilanci
-    for uname, (fisso, var) in changes.items():
-        uid = next(uid for uid, u, _, _ in players if u == uname)
+    # Aggiorna balances
+    for uid, (uname, fisso, var) in changes.items():
         totale = round(fisso + var, 2)
         c.execute("""
             INSERT INTO balances (user_id, username, balance)
