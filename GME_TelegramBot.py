@@ -638,6 +638,29 @@ async def bannati(update: Update, context: CallbackContext):
     await update.message.reply_text(message, parse_mode="HTML")
 
 
+
+async def admin(update: Update, context: CallbackContext):
+    try:
+        chat = update.effective_chat
+        admins = await context.bot.get_chat_administrators(chat.id)
+
+        mentions = []
+        for admin in admins:
+            user = admin.user
+            if user.username:
+                mentions.append(f"@{user.username}")
+            else:
+                name = user.first_name or "admin"
+                mentions.append(f"<i>{name}</i>")
+
+        message = "🔧 <b>Amministratori della chat:</b>\n" + "\n".join(mentions)
+        await update.message.reply_text(message, parse_mode="HTML")
+
+    except Exception as e:
+        logging.error(f"Errore nel recupero degli admin: {e}")
+        await update.message.reply_text("❌ Errore nel recupero degli admin.")
+
+
 async def testVincitore(update: Update, context: CallbackContext):
     """
     Funzione per testare il calcolo del vincitore con premi e penalità corretti.
@@ -833,6 +856,7 @@ async def main_async():
     app_instance.add_handler(CommandHandler("classifica", classifica))
     app_instance.add_handler(CommandHandler("scommesse", scommesse))
     app_instance.add_handler(CommandHandler("bilancio", bilancio))
+    app_instance.add_handler(CommandHandler("admin", admin))
     app_instance.add_handler(CommandHandler("testVincitore", testVincitore))
     app_instance.add_handler(CommandHandler("istruzioni", istruzioni))
     app_instance.add_handler(CommandHandler("id", registra_id))
