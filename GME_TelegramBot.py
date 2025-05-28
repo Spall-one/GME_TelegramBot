@@ -475,6 +475,31 @@ async def vincitore(update: Update, context: CallbackContext):
 
 
 
+async def testapi(update: Update, context: CallbackContext):
+    if update.effective_user.id != ADMIN_CHAT_ID:
+        await update.message.reply_text("❌ Solo l'amministratore può usare questo comando.")
+        return
+
+    url = f"https://finnhub.io/api/v1/quote?symbol={GME_TICKER}&token={API_KEY}"
+    try:
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        prev_close = data.get("pc")
+        close = data.get("c")
+
+        if prev_close is None or close is None:
+            msg = f"⚠️ Dati incompleti ricevuti da Finnhub:\n<pre>{data}</pre>"
+            logging.warning(msg)
+            await update.message.reply_text(msg, parse_mode="HTML")
+            return
+
+        variation = round(((close - prev_close) / prev_close) * 100, 2)
+        msg = f"✅ <b>Variazione GME:</b> {variation}%\n<pre>pc: {prev_close}, c: {close}</pre>"
+        await update.message.reply_text(msg, parse_mode="HTML")
+    except Exception as e:
+        logging.error(f"❌ Errore nella chiamata a Finnhub: {e}")
+        await update.message.reply_text(f"❌ Errore nella richiesta: {e}")
 
 
 async def istruzioni(update: Update, context: CallbackContext):
@@ -803,6 +828,7 @@ async def main_async():
     # Aggiunta handler comandi
     app_instance.add_handler(CommandHandler("bet", bet))
     app_instance.add_handler(CommandHandler("vincitore", vincitore))
+    app_instance.add_handler(CommandHandler("testapi", testapi))
     app_instance.add_handler(CommandHandler("betTEST", betTEST))
     app_instance.add_handler(CommandHandler("classifica", classifica))
     app_instance.add_handler(CommandHandler("scommesse", scommesse))
