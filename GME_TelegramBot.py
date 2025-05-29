@@ -383,6 +383,7 @@ async def vincitore(update: Update, context: CallbackContext):
         total_prize = round(300 + variable_pool, 2)
 
         # Aggiorna bilancio vincitore perfetto
+        c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (pg_uname, pg_id))
         c.execute("""
             INSERT INTO balances (user_id, username, balance)
             VALUES (?, ?, ?)
@@ -393,6 +394,7 @@ async def vincitore(update: Update, context: CallbackContext):
 
         # Aggiorna perdenti
         for loser_id, loser_uname, loss in losers_info:
+            c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (loser_uname, loser_id))
             c.execute("""
                 INSERT INTO balances (user_id, username, balance)
                 VALUES (?, ?, ?)
@@ -441,6 +443,8 @@ async def vincitore(update: Update, context: CallbackContext):
     # Aggiornamento balances
     for uid, (uname, fisso, var) in changes.items():
         totale = round(fisso + var, 2)
+        # 1. Aggiorna username se è cambiato
+        c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (uname, uid))
         c.execute("""
             INSERT INTO balances (user_id, username, balance)
             VALUES (?, ?, ?)
