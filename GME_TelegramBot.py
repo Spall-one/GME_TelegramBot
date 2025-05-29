@@ -279,19 +279,35 @@ async def bilancio(update: Update, context: CallbackContext):
 
     await update.message.reply_text(f"💰 Il tuo saldo attuale è: {balance}€")
 
-# Funzione per mostrare la classifica completa
 async def classifica(update: Update, context: CallbackContext):
-    # Recupera e arrotonda i bilanci a due decimali
-    c.execute("SELECT username, ROUND(balance, 2) as balance FROM balances ORDER BY balance DESC")
-    rankings = c.fetchall()
+    """
+    Mostra la classifica completa aggregando i bilanci per user_id,
+    in modo da evitare doppie visualizzazioni per errori di scrittura storici.
+    """
+    try:
+        # Aggrega per user_id ed estrae l'ultimo username registrato
+        c.execute("""
+            SELECT b.user_id, MAX(b.username) as username, ROUND(SUM(b.balance), 2) as total_balance
+            FROM balances b
+            GROUP BY b.user_id
+            ORDER BY total_balance DESC
+        """)
+        rankings = c.fetchall()
 
-    # Costruisci il messaggio con HTML
-    message = "<b>🏆 Classifica completa:</b>\n\n"
-    for i, (username, balance) in enumerate(rankings, start=1):
-        message += f"<b>{i}.</b> @{username}: <b>{balance}€</b>\n"
+        if not rankings:
+            await update.message.reply_text("📭 Nessun bilancio disponibile.")
+            return
 
-    # Invia il messaggio con parse_mode HTML
-    await update.message.reply_text(message, parse_mode="HTML")
+        message = "<b>🏆 Classifica completa:</b>\n\n"
+        for i, (_, username, balance) in enumerate(rankings, start=1):
+            message += f"<b>{i}.</b> @{username}: <b>{balance}€</b>\n"
+
+        await update.message.reply_text(message, parse_mode="HTML")
+
+    except Exception as e:
+        logging.error(f"Errore nella generazione della classifica: {e}")
+        await update.message.reply_text("❌ Errore nel recupero della classifica.")
+
 
 
 
