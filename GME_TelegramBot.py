@@ -345,7 +345,8 @@ async def vincitore(update: Update, context: CallbackContext):
     existing_result = c.fetchone()
     if existing_result:
         await update.message.reply_text(existing_result[0], parse_mode="HTML")
-        return
+        return  # ⛔ BLOCCA l'esecuzione: non ricalcolare balances!
+
 
     # Previsioni del giorno
     c.execute("SELECT user_id, username, prediction FROM predictions WHERE date = ?", (target_date,))
