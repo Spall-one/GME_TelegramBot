@@ -72,30 +72,43 @@ start_keep_alive_server()
 DB_FILE = "predictions.db"
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 c = conn.cursor()
-c.execute('''CREATE TABLE IF NOT EXISTS predictions (
-                user_id INTEGER,
-                username TEXT,
-                prediction REAL,
-                date TEXT,
-                UNIQUE(user_id, date)
-            )''')
-conn.commit()
 
-c.execute('''CREATE TABLE IF NOT EXISTS balances (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT UNIQUE,
-                balance INTEGER DEFAULT 0
-            )''')
-c.execute('''CREATE TABLE IF NOT EXISTS winners (
-                date TEXT PRIMARY KEY,
-                result TEXT
-            )''')
-conn.commit()
+# Crea tabella predictions
+c.execute('''
+    CREATE TABLE IF NOT EXISTS predictions (
+        user_id INTEGER,
+        username TEXT,
+        prediction REAL,
+        date TEXT,
+        UNIQUE(user_id, date)
+    )
+''')
 
-c.execute('''CREATE TABLE IF NOT EXISTS bans (
-                user_id INTEGER PRIMARY KEY,
-                ban_until TEXT
-            )''')
+# Crea tabella balances (senza UNIQUE su username)
+c.execute('''
+    CREATE TABLE IF NOT EXISTS balances (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        balance INTEGER DEFAULT 0
+    )
+''')
+
+# Crea tabella winners
+c.execute('''
+    CREATE TABLE IF NOT EXISTS winners (
+        date TEXT PRIMARY KEY,
+        result TEXT
+    )
+''')
+
+# Crea tabella bans
+c.execute('''
+    CREATE TABLE IF NOT EXISTS bans (
+        user_id INTEGER PRIMARY KEY,
+        ban_until TEXT
+    )
+''')
+
 conn.commit()
 
 # Lista di giorni in cui il mercato è chiuso (festività, chiusure programmate)
