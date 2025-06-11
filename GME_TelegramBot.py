@@ -360,7 +360,6 @@ async def vincitore(update: Update, context: CallbackContext):
     date_offset = -1 if context.args and context.args[0] == "yesterday" else 0
     target_date = (now + timedelta(days=date_offset)).strftime("%Y-%m-%d")
 
-    # Controllo orario
     if date_offset == 0 and now.time() < MARKET_CLOSE_TIME:
         await update.message.reply_text("⏳ Il mercato è ancora aperto! Puoi controllare il vincitore dopo le 22:10.")
         return
@@ -369,15 +368,12 @@ async def vincitore(update: Update, context: CallbackContext):
         await update.message.reply_text(f"❌ Il mercato era chiuso il {target_date}. Nessuna vincita calcolata.")
         return
 
-    # Se il vincitore è già stato calcolato, mostra il risultato
     c.execute("SELECT result FROM winners WHERE date = ?", (target_date,))
     existing_result = c.fetchone()
     if existing_result:
         await update.message.reply_text(existing_result[0], parse_mode="HTML")
-        return  # ⛔ BLOCCA l'esecuzione: non ricalcolare balances!
+        return
 
-
-    # Previsioni del giorno
     c.execute("SELECT user_id, username, prediction FROM predictions WHERE date = ?", (target_date,))
     predictions = c.fetchall()
     if not predictions:
@@ -393,11 +389,9 @@ async def vincitore(update: Update, context: CallbackContext):
     players.sort(key=lambda x: x[3])
     num_players = len(players)
 
-    # Controlla se esiste un perfect guess
     perfect_guesser = next((p for p in players if p[3] == 0.0), None)
 
     if perfect_guesser:
-        # Calcolo parte variabile da perdenti
         middle = num_players // 2
         variable_pool = 0
         losers_info = []
@@ -412,7 +406,6 @@ async def vincitore(update: Update, context: CallbackContext):
         pg_id, pg_uname, _, _ = perfect_guesser
         total_prize = round(300 + variable_pool, 2)
 
-        # Aggiorna bilancio vincitore perfetto
         c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (pg_uname, pg_id))
         c.execute("""
             INSERT INTO balances (user_id, username, balance)
@@ -422,7 +415,6 @@ async def vincitore(update: Update, context: CallbackContext):
                 username = excluded.username
         """, (pg_id, pg_uname, total_prize, total_prize))
 
-        # Aggiorna perdenti
         for loser_id, loser_uname, loss in losers_info:
             c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (loser_uname, loser_id))
             c.execute("""
@@ -446,18 +438,16 @@ async def vincitore(update: Update, context: CallbackContext):
         await update.message.reply_text(msg, parse_mode="HTML")
         return
 
-    # Altrimenti, ramo standard
+    # Calcolo standard
     rewards = {1: 150, 2: 100, 3: 50}
     penalties = {-1: -150, -2: -100, -3: -50}
     risk_multiplier = 5
-    changes = {uid: [uname, 0.0, 0.0] for uid, uname, _, _ in players}  # {user_id: [username, fisso, variabile]}
+    changes = {uid: [uname, 0.0, 0.0] for uid, uname, _, _ in players}
 
-    # Premi e penalità fisse
     for i in range(3):
         changes[players[i][0]][1] += rewards[i + 1]
         changes[players[-(i + 1)][0]][1] += penalties[-(i + 1)]
 
-    # Variabile simmetrica
     for i in range(num_players // 2):
         top = players[i]
         bottom = players[-(i + 1)]
@@ -470,10 +460,8 @@ async def vincitore(update: Update, context: CallbackContext):
         changes[mid_uid][1] = 0.0
         changes[mid_uid][2] = 0.0
 
-    # Aggiornamento balances
     for uid, (uname, fisso, var) in changes.items():
         totale = round(fisso + var, 2)
-        # 1. Aggiorna username se è cambiato
         c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (uname, uid))
         c.execute("""
             INSERT INTO balances (user_id, username, balance)
@@ -483,13 +471,23 @@ async def vincitore(update: Update, context: CallbackContext):
                 username = excluded.username
         """, (uid, uname, totale, totale))
 
+    # 🔻 Penalità per non scommessa
+    c.execute("SELECT user_id, username FROM balances")
+    all_users = dict(c.fetchall())
+    non_bettors = {uid: uname for uid, uname in all_users.items() if uid not in changes}
+
+    for uid in non_bettors:
+        c.execute("""
+            UPDATE balances SET balance = ROUND(balance - 10, 2) WHERE user_id = ?
+        """, (uid,))
+
     conn.commit()
 
-    # Output classifica
+    # 🧾 Output classifica
     msg = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n\n"
     sorted_results = sorted(
         changes.items(),
-        key=lambda item: -(item[1][1] + item[1][2])  # fisso + variabile
+        key=lambda item: -(item[1][1] + item[1][2])
     )
 
     for i, (uid, (uname, fisso, var)) in enumerate(sorted_results):
@@ -503,11 +501,14 @@ async def vincitore(update: Update, context: CallbackContext):
             f"(Diff: {diff:.2f}%) | Fisso: {fisso}€, Variabile: {var}€, Totale: {total}€\n"
         )
 
+    if non_bettors:
+        msg += "\n<b>😴 Non hanno scommesso e perdono 10€:</b>\n"
+        for uname in non_bettors.values():
+            msg += f"• @{uname}\n"
+
     c.execute("INSERT INTO winners (date, result) VALUES (?, ?)", (target_date, msg))
     conn.commit()
     await update.message.reply_text(msg, parse_mode="HTML")
-
-
 
 async def testapi(update: Update, context: CallbackContext):
     if update.effective_user.id != ADMIN_CHAT_ID:
