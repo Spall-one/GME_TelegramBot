@@ -8,10 +8,13 @@ import threading
 import asyncio
 import nest_asyncio
 from flask import Flask
+import threading
+import os
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackContext
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo  # Import per il fuso orario dinamico
+
 
 nest_asyncio.apply()
 
@@ -876,10 +879,24 @@ async def reminder_scheduler(chat_id: int):
 # Funzione per avviare il bot
 
 
+
+app_flask = Flask(__name__)
+
+@app_flask.route("/")
+def home():
+    return "✅ Bot GME attivo"
+
+def run_flask():
+    port = int(os.getenv("PORT", 5000))
+    try:
+        app_flask.run(host="0.0.0.0", port=port)
+    except Exception as e:
+        logging.error(f"Errore Flask: {e}")
+
 # Main function
         
 # Main async
-async def main_async():
+def main():
     global app_instance
     app_instance = Application.builder().token(TOKEN).build()
 
@@ -902,31 +919,23 @@ async def main_async():
     logging.info("Bot avviato con successo!")
 
     # Avvia reminder in background solo se è una coroutine valida
+    # Avvia reminder in background se coroutine
     try:
         task = reminder_scheduler(GROUP_TOPIC_CHAT_ID)
         if asyncio.iscoroutine(task):
             asyncio.create_task(task)
-        else:
-            logging.error("reminder_scheduler non ha restituito una coroutine valida.")
     except Exception as e:
         logging.error(f"Errore nell'avvio del reminder scheduler: {e}")
 
-    # Polling del bot (senza await, perché non è una coroutine)
+    # 🚀 Questo tiene vivo il processo!
     app_instance.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
         close_loop=False
     )
-
-
-def main():
-    try:
-        asyncio.run(main_async())
-    except Exception as e:
-        logging.exception("Errore fatale nel main:")
-
-
+    
 if __name__ == "__main__":
+    threading.Thread(target=run_flask).start()
     main()
 
 
