@@ -911,8 +911,8 @@ async def main_async():
     except Exception as e:
         logging.error(f"Errore nell'avvio del reminder scheduler: {e}")
 
-    # Polling del bot
-    await app_instance.run_polling(
+    # Polling del bot (senza await, perché non è una coroutine)
+    app_instance.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
         close_loop=False
