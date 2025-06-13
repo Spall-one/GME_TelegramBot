@@ -428,94 +428,96 @@ async def vincitore(update: Update, context: CallbackContext):
     # Determina se c'è un perfect guesser
     perfect_guesser = next((p for p in players if p[3] == 0.0), None)
 
-    # Perfect guess
     if perfect_guesser:
         middle = num_players // 2
         variable_pool = 0
         losers_info = []
 
-    for i in range(middle):
-        diff_top = players[i][3]
-        diff_bottom = players[-(i + 1)][3]
-        loss = abs(round((diff_bottom - diff_top) * 5, 2))
-        variable_pool += loss
-        losers_info.append((players[-(i + 1)][0], players[-(i + 1)][1], loss))  # (user_id, username, var_loss)
+        for i in range(middle):
+            diff_top = players[i][3]
+            diff_bottom = players[-(i + 1)][3]
+            loss = abs(round((diff_bottom - diff_top) * 5, 2))
+            variable_pool += loss
+            losers_info.append((players[-(i + 1)][0], players[-(i + 1)][1], loss))
 
-    # Penalità fisse sugli ultimi 3
-    penalties = {-1: -150, -2: -100, -3: -50}
-    fixed_losses = []
-    for i, penalty in penalties.items():
-        uid, uname, *_ = players[i]
-        fixed_losses.append((uid, uname, -penalty))  # attenzione: negativa
+        # Penalità fisse sugli ultimi 3
+        penalties = {-1: -150, -2: -100, -3: -50}
+        fixed_losses = []
+        for i, penalty in penalties.items():
+            uid, uname, *_ = players[i]
+            fixed_losses.append((uid, uname, penalty))  # 👈 già negativo
 
-    # Vincitore perfetto
-    pg_id, pg_uname, _, _ = perfect_guesser
-    total_prize = round(300 + variable_pool, 2)
+        # Vincitore perfetto
+        pg_id, pg_uname, _, _ = perfect_guesser
+        total_prize = round(300 + variable_pool, 2)
 
-    # Aggiorna bilancio vincitore perfetto
-    c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (pg_uname, pg_id))
-    c.execute("""
-        INSERT INTO balances (user_id, username, balance)
-        VALUES (?, ?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET
-            balance = ROUND(balance + ?, 2),
-            username = excluded.username
-    """, (pg_id, pg_uname, total_prize, total_prize))
-
-    # Aggiorna perdenti (variabile)
-    for loser_id, loser_uname, loss in losers_info:
-        c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (loser_uname, loser_id))
-        c.execute("""
-            INSERT INTO balances (user_id, username, balance)
-            VALUES (?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                balance = ROUND(balance - ?, 2),
-                username = excluded.username
-        """, (loser_id, loser_uname, -loss, loss))
-
-    # Aggiorna perdenti (fisso)
-    for uid, uname, fixed_penalty in fixed_losses:
-        c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (uname, uid))
+        # Aggiorna vincitore perfetto
+        c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (pg_uname, pg_id))
         c.execute("""
             INSERT INTO balances (user_id, username, balance)
             VALUES (?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 balance = ROUND(balance + ?, 2),
                 username = excluded.username
-        """, (uid, uname, fixed_penalty, fixed_penalty))
+        """, (pg_id, pg_uname, total_prize, total_prize))
 
-    conn.commit()
+        # Penalità variabile
+        for uid, uname, loss in losers_info:
+            c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (uname, uid))
+            c.execute("""
+                INSERT INTO balances (user_id, username, balance)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    balance = ROUND(balance - ?, 2),
+                    username = excluded.username
+            """, (uid, uname, -loss, loss))
 
-    # Messaggio
-    msg = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n"
-    msg += f"<i>Tesoretto attuale: {tesoretto}€</i>\n\n"
-    msg += f"🎯 <b>Perfetto!</b> @{pg_uname} ha indovinato esattamente la chiusura!\n"
-    msg += f"🏅 Guadagna: 300€ fissi + {round(variable_pool, 2)}€ (parte variabile) = <b>{total_prize}€</b>\n\n"
+        # Penalità fisse
+        for uid, uname, fixed_penalty in fixed_losses:
+            c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (uname, uid))
+            c.execute("""
+                INSERT INTO balances (user_id, username, balance)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    balance = ROUND(balance + ?, 2),
+                    username = excluded.username
+            """, (uid, uname, fixed_penalty, fixed_penalty))
 
-    msg += "<b>❌ Perdenti (parte variabile):</b>\n"
-    for _, uname, loss in losers_info:
-        msg += f"• @{uname}: -{loss}€\n"
+        # Messaggio
+        msg = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n"
+        msg += f"<i>Tesoretto attuale: {tesoretto}€</i>\n\n"
+        msg += f"🎯 <b>Perfetto!</b> @{pg_uname} ha indovinato esattamente la chiusura!\n"
+        msg += f"🏅 Guadagna: 300€ fissi + {round(variable_pool, 2)}€ (parte variabile) = <b>{total_prize}€</b>\n\n"
 
-    msg += "\n<b>💀 Penalità fisse assegnate:</b>\n"
-    for _, uname, fixed in fixed_losses:
-        msg += f"• @{uname}: {fixed}€\n"
+        msg += "<b>📊 Partecipanti:</b>\n"
+        for uid, uname, pred, diff in players:
+            label = "🏆" if uid == pg_id else ""
+            msg += f"{label}• @{uname}: {pred:.2f}% (Diff: {diff:.2f}%)\n"
 
-    # Penalità per non scommessa
-    if non_bettors:
-        msg += "\n<b>😴 Non hanno scommesso e perdono 10€:</b>\n"
-        for uname in non_bettors.values():
-            msg += f"• @{uname}\n"
+        msg += "\n<b>❌ Perdenti (parte variabile):</b>\n"
+        for _, uname, loss in losers_info:
+            msg += f"• @{uname}: -{loss}€\n"
 
-    # Bonus settimanale se venerdì e mercato aperto
-    if date_obj.weekday() == 4 and target_date not in CHIUSURE_MERCATO and tesoretto > 0:
-        c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2) WHERE user_id = ?", (tesoretto, pg_id))
-        c.execute("DELETE FROM weekly_pot WHERE week_start = ?", (week_start,))
-        msg += f"\n💰 <b>Tesoretto settimanale:</b> @{pg_uname} riceve anche <b>{tesoretto}€</b> extra!\n"
+        msg += "\n<b>💀 Penalità fisse assegnate:</b>\n"
+        for _, uname, fixed in fixed_losses:
+            msg += f"• @{uname}: -{abs(fixed)}€\n"
 
-    c.execute("INSERT INTO winners (date, result) VALUES (?, ?)", (target_date, msg))
-    conn.commit()
-    await update.message.reply_text(msg, parse_mode="HTML")
-    return
+        # Penalità per non scommessa
+        if non_bettors:
+            msg += "\n<b>😴 Non hanno scommesso e perdono 10€:</b>\n"
+            for uname in non_bettors.values():
+                msg += f"• @{uname}\n"
+
+        # Bonus settimanale se venerdì
+        if date_obj.weekday() == 4 and target_date not in CHIUSURE_MERCATO and tesoretto > 0:
+            c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2) WHERE user_id = ?", (tesoretto, pg_id))
+            c.execute("DELETE FROM weekly_pot WHERE week_start = ?", (week_start,))
+            msg += f"\n💰 <b>Tesoretto settimanale:</b> @{pg_uname} riceve anche <b>{tesoretto}€</b> extra!\n"
+
+        c.execute("INSERT INTO winners (date, result) VALUES (?, ?)", (target_date, msg))
+        conn.commit()
+        await update.message.reply_text(msg, parse_mode="HTML")
+        return
 
 
     # Calcolo standard
