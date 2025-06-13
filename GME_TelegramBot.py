@@ -794,6 +794,10 @@ async def testVincitore(update: Update, context: CallbackContext):
     await update.message.reply_text(message)
 
 
+
+def testapi(update, context):
+    update.message.reply_text("API funzionante!")
+
 async def betTEST(update: Update, context: CallbackContext):
     # Prova a estrarre il valore della scommessa (verifica la sintassi, ma non lo mostra)
     try:
