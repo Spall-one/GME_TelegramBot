@@ -424,6 +424,9 @@ async def vincitore(update: Update, context: CallbackContext):
     c.execute("SELECT amount FROM weekly_pot WHERE week_start = ?", (week_start,))
     row = c.fetchone()
     tesoretto = round(row[0], 2) if row else 0.0
+    
+    # Determina se c'è un perfect guesser
+    perfect_guesser = next((p for p in players if p[3] == 0.0), None)
 
     # Perfect guess
     if perfect_guesser:
