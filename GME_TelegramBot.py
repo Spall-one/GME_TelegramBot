@@ -270,9 +270,9 @@ async def bet(update: Update, context: CallbackContext):
         f"📢 Nuova scommessa registrata:\n"
         f"Utente: @{username} (ID: <code>{user_id}</code>)\n"
         f"Valore scommesso: {prediction}%\n"
-        f"Data: {today}",
-        parse_mode="HTML"
+        f"Data: {today}"
     )
+
     try:
         await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
