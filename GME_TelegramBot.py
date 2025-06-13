@@ -14,6 +14,8 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackContext
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo  # Import per il fuso orario dinamico
+from telegram.constants import ParseMode
+from datetime import datetime, timedelta
 
 
 nest_asyncio.apply()
@@ -111,6 +113,15 @@ c.execute('''
         ban_until TEXT
     )
 ''')
+
+# Crea tabella tesoretto
+c.execute('''
+    CREATE TABLE IF NOT EXISTS weekly_pot (
+        week_start TEXT PRIMARY KEY,
+         amount REAL DEFAULT 0
+    );
+''')
+
 
 conn.commit()
 
@@ -362,6 +373,8 @@ async def vincitore(update: Update, context: CallbackContext):
     now = datetime.now(ITALY_TZ)
     date_offset = -1 if context.args and context.args[0] == "yesterday" else 0
     target_date = (now + timedelta(days=date_offset)).strftime("%Y-%m-%d")
+    date_obj = datetime.strptime(target_date, "%Y-%m-%d")
+    week_start = (date_obj - timedelta(days=date_obj.weekday())).strftime("%Y-%m-%d")
 
     if date_offset == 0 and now.time() < MARKET_CLOSE_TIME:
         await update.message.reply_text("⏳ Il mercato è ancora aperto! Puoi controllare il vincitore dopo le 22:10.")
@@ -392,13 +405,31 @@ async def vincitore(update: Update, context: CallbackContext):
     players.sort(key=lambda x: x[3])
     num_players = len(players)
 
-    perfect_guesser = next((p for p in players if p[3] == 0.0), None)
+    # Calcola penalità non scommettitori e aggiorna tesoretto
+    c.execute("SELECT user_id, username FROM balances")
+    all_users = dict(c.fetchall())
+    non_bettors = {uid: uname for uid, uname in all_users.items() if uid not in [p[0] for p in players]}
 
+    penalty_total = 10 * len(non_bettors)
+    for uid in non_bettors:
+        c.execute("UPDATE balances SET balance = ROUND(balance - 10, 2) WHERE user_id = ?", (uid,))
+
+    c.execute("""
+        INSERT INTO weekly_pot (week_start, amount)
+        VALUES (?, ?)
+        ON CONFLICT(week_start) DO UPDATE SET amount = ROUND(amount + ?, 2)
+    """, (week_start, penalty_total, penalty_total))
+
+    c.execute("SELECT amount FROM weekly_pot WHERE week_start = ?", (week_start,))
+    row = c.fetchone()
+    tesoretto = round(row[0], 2) if row else 0.0
+
+    # Perfect guess
+    perfect_guesser = next((p for p in players if p[3] == 0.0), None)
     if perfect_guesser:
         middle = num_players // 2
         variable_pool = 0
         losers_info = []
-
         for i in range(middle):
             diff_top = players[i][3]
             diff_bottom = players[-(i + 1)][3]
@@ -430,12 +461,16 @@ async def vincitore(update: Update, context: CallbackContext):
 
         conn.commit()
 
-        msg = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n\n"
+        msg = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n"
+        msg += f"<i>Tesoretto attuale: {tesoretto}€</i>\n\n"
         msg += f"🎯 <b>Perfetto!</b> @{pg_uname} ha indovinato esattamente la chiusura e vince <b>{total_prize}€</b>!\n\n"
         msg += "<b>Perdenti:</b>\n"
         for _, uname, loss in losers_info:
             msg += f"• @{uname} ha perso <i>{loss}€</i>\n"
-
+        if non_bettors:
+            msg += "\n<b>😴 Non hanno scommesso e perdono 10€:</b>\n"
+            for uname in non_bettors.values():
+                msg += f"• @{uname}\n"
         c.execute("INSERT INTO winners (date, result) VALUES (?, ?)", (target_date, msg))
         conn.commit()
         await update.message.reply_text(msg, parse_mode="HTML")
@@ -474,25 +509,22 @@ async def vincitore(update: Update, context: CallbackContext):
                 username = excluded.username
         """, (uid, uname, totale, totale))
 
-    # 🔻 Penalità per non scommessa
-    c.execute("SELECT user_id, username FROM balances")
-    all_users = dict(c.fetchall())
-    non_bettors = {uid: uname for uid, uname in all_users.items() if uid not in changes}
-
-    for uid in non_bettors:
-        c.execute("""
-            UPDATE balances SET balance = ROUND(balance - 10, 2) WHERE user_id = ?
-        """, (uid,))
+    # Venerdì + mercato aperto = assegna tesoretto
+    bonus_msg = ""
+    if date_obj.weekday() == 4 and target_date not in CHIUSURE_MERCATO and tesoretto > 0:
+        first_uid = players[0][0]
+        first_uname = players[0][1]
+        c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2) WHERE user_id = ?", (tesoretto, first_uid))
+        c.execute("DELETE FROM weekly_pot WHERE week_start = ?", (week_start,))
+        bonus_msg = f"\n💰 <b>Tesoretto settimanale:</b> @{first_uname} riceve <b>{tesoretto}€</b> extra per la vittoria del venerdì!\n"
 
     conn.commit()
 
-    # 🧾 Output classifica
-    msg = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n\n"
-    sorted_results = sorted(
-        changes.items(),
-        key=lambda item: -(item[1][1] + item[1][2])
-    )
+    # Output classifica
+    msg = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n"
+    msg += f"<i>Tesoretto attuale: {tesoretto}€</i>\n\n"
 
+    sorted_results = sorted(changes.items(), key=lambda item: -(item[1][1] + item[1][2]))
     for i, (uid, (uname, fisso, var)) in enumerate(sorted_results):
         pred = next(p for u, n, p, _ in players if u == uid)
         diff = round(abs(pred - closing_percentage), 2)
@@ -509,68 +541,56 @@ async def vincitore(update: Update, context: CallbackContext):
         for uname in non_bettors.values():
             msg += f"• @{uname}\n"
 
+    msg += bonus_msg
     c.execute("INSERT INTO winners (date, result) VALUES (?, ?)", (target_date, msg))
     conn.commit()
     await update.message.reply_text(msg, parse_mode="HTML")
 
-async def testapi(update: Update, context: CallbackContext):
-    if update.effective_user.id != ADMIN_CHAT_ID:
-        await update.message.reply_text("❌ Solo l'amministratore può usare questo comando.")
-        return
-
-    url = f"https://finnhub.io/api/v1/quote?symbol={GME_TICKER}&token={API_KEY}"
-    try:
-        response = requests.get(url, timeout=5)
-        response.raise_for_status()
-        data = response.json()
-        prev_close = data.get("pc")
-        close = data.get("c")
-
-        if prev_close is None or close is None:
-            msg = f"⚠️ Dati incompleti ricevuti da Finnhub:\n<pre>{data}</pre>"
-            logging.warning(msg)
-            await update.message.reply_text(msg, parse_mode="HTML")
-            return
-
-        variation = round(((close - prev_close) / prev_close) * 100, 2)
-        msg = f"✅ <b>Variazione GME:</b> {variation}%\n<pre>pc: {prev_close}, c: {close}</pre>"
-        await update.message.reply_text(msg, parse_mode="HTML")
-    except Exception as e:
-        logging.error(f"❌ Errore nella chiamata a Finnhub: {e}")
-        await update.message.reply_text(f"❌ Errore nella richiesta: {e}")
 
 
 async def istruzioni(update: Update, context: CallbackContext):
     messaggio = (
-        "📘 <b>Istruzioni del GME Bot</b>\n\n"
-        "Benvenuto nel bot per scommettere sulla variazione giornaliera del titolo GME 📈.\n\n"
-        "Ogni giorno di mercato aperto puoi fare la tua previsione sulla variazione % del titolo con il comando <b>/bet</b>.\n"
-        "Le previsioni si chiudono alle <b>15:30</b>. I risultati vengono poi calcolati dopo la chiusura del mercato alle <b>22:10</b>.\n\n"
-        "<b>🧮 Sistema di punteggio:</b>\n"
-        "• <b>Parte fissa</b>:\n"
-        "   – 🥇 1° classificato: +150 €\n"
-        "   – 🥈 2° classificato: +100 €\n"
-        "   – 🥉 3° classificato: +50 €\n"
-        "   – 💀 Terzultimo: –50 €\n"
-        "   – 💀 Penultimo: –100 €\n"
-        "   – 💀 Ultimo: –150 €\n"
-        "• <b>Parte variabile</b>:\n"
-        "   – Calcolata abbinando chi è più preciso con chi è meno preciso\n"
-        "   – Differenza di errore × <b>moltiplicatore di rischio 5×</b>\n\n"
-        "<b>🎯 Perfect guess</b>:\n"
-        "Se la tua previsione coincide esattamente con la chiusura (diff = 0), vinci:\n"
-        "• Tutte le parti fisse (300 € totali)\n"
-        "• L’intera parte variabile persa dalla metà inferiore della classifica\n\n"
-        "<b>📋 Comandi disponibili</b>:\n"
-        "• <b>/bet &lt;percentuale&gt;</b> – Registra la tua scommessa del giorno\n"
-        "• <b>/scommesse</b> – Elenca chi ha già piazzato la scommessa oggi\n"
-        "• <b>/vincitore [yesterday]</b> – Calcola e mostra i risultati (oggi o ieri)\n"
-        "• <b>/bilancio</b> – Mostra il tuo saldo personale\n"
-        "• <b>/classifica</b> – Mostra la classifica aggiornata\n"
-        "• <b>/istruzioni</b> – Mostra questo messaggio\n"
-        "• <b>/id</b> – Restituisce l’ID della chat o dell’utente (per debug)\n"
-        "• <b>/ban username giorni</b> – (Solo il re dei bot può usare questo comando) blocca un utente per un numero di giorni\n"
-        "• <b>/bannati</b> –  elenca gli utenti attualmente bannati\n\n"
+        "Ogni giorno puoi scommettere sulla variazione percentuale del titolo <b>$GME</b>. "
+        "Il sistema assegna premi ai più precisi e penalità agli ultimi, oltre a una dinamica di punteggio variabile e accumulo settimanale.\n"
+        "\n"
+        "<b>🕒 Orari</b>\n"
+        "• Le scommesse sono aperte dalle 00:00 fino alle 15:30 (orario italiano)\n"
+        "• I risultati vengono calcolati dopo le 22:10\n"
+        "\n"
+        "<b>💰 Punteggio</b>\n"
+        "• 1° classificato: +150€\n"
+        "• 2° classificato: +100€\n"
+        "• 3° classificato: +50€\n"
+        "• Ultimi 3: -50€, -100€, -150€\n"
+        "• Parte variabile: ogni utente scambia punti col suo “opposto” in classifica (differenza * 5)\n"
+        "\n"
+        "<b>🎯 Perfect guess</b>\n"
+        "• +300€ fissi\n"
+        "• Guadagna l’intera parte variabile dei perdenti della metà bassa\n"
+        "\n"
+        "<b>😴 Penalità giornaliera</b>\n"
+        "• Chi è in classifica ma non scommette perde 10€\n"
+        "• Questa somma va nel <b>tesoretto settimanale</b>\n"
+        "\n"
+        "<b>💎 Tesoretto settimanale</b>\n"
+        "• Accumula 10€ per ogni utente inattivo\n"
+        "• Viene assegnato al vincitore del venerdì (se il mercato è aperto)\n"
+        "• Se il venerdì è chiuso, resta per la settimana successiva\n"
+        "\n"
+        "<b>🔧 Comandi principali</b>\n"
+        "/bet <valore> – Invia la tua previsione giornaliera\n"
+        "/vincitore – Calcola i risultati (disponibile dopo le 22:10)\n"
+        "/vincitore yesterday – Mostra i risultati di ieri\n"
+        "/scommesse – Mostra le previsioni attive di oggi\n"
+        "/bannati – Elenco utenti bannati\n"
+        "/classifica – Classifica aggiornata\n"
+        "/bilancio – Mostra il tuo saldo\n"
+        "/id – Registra il tuo ID Telegram\n"
+        "/istruzioni – Mostra questo messaggio\n"
+        "\n"
+        "<b>👮 Solo admin</b>\n"
+        "/ban <username> <giorni> – Bannare un utente\n"
+        "/unban <username> – Sbloccare un utente\n"
         "Buona fortuna e che vinca il più preciso! 🧠💸"
     )
     await update.message.reply_text(messaggio, parse_mode="HTML")
