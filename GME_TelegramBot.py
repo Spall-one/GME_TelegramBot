@@ -127,7 +127,7 @@ conn.commit()
 
 # Lista di giorni in cui il mercato è chiuso (festività, chiusure programmate)
 CHIUSURE_MERCATO = {
-    "2025-01-01", "2025-07-04", "2025-12-25", "2025-12-26", "2025-11-27", "2025-04-18", "2025-05-26"
+    "2025-01-01", "2025-07-04", "2025-12-25", "2025-12-26", "2025-11-27", "2025-04-18", "2025-05-26", "2025-06-19", "2025-09-01"
 }
 
 # Funzione per ottenere la variazione percentuale attuale di GME
