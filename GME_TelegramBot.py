@@ -270,7 +270,7 @@ async def bet(update: Update, context: CallbackContext):
         f"📢 Nuova scommessa registrata:\n"
         f"Utente: @{username} (ID: <code>{user_id}</code>)\n"
         f"Valore scommesso: {prediction}%\n"
-        f"Data: {today}"
+        f"Data: {today_date}"
     )
 
     try:
