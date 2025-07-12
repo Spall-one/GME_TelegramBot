@@ -442,9 +442,9 @@ async def vincitore(update: Update, context: CallbackContext):
     perfect_guesser = next((p for p in players if p[3] == 0.0), None)
 
     if perfect_guesser:
-    middle = num_players // 2
-    variable_pool = 0
-    losers_info = []
+        middle = num_players // 2
+        variable_pool = 0
+        losers_info = []
 
     for i in range(middle):
         diff_top = players[i][3]
