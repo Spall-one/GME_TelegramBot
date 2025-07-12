@@ -347,25 +347,38 @@ async def chatid(update: Update, context: CallbackContext):
 # Funzione per mostrare le scommesse del giorno
 async def scommesse(update: Update, context: CallbackContext):
     now = datetime.now(ITALY_TZ)
-    today_date = now.strftime("%Y-%m-%d")
-    c.execute("SELECT username, prediction FROM predictions WHERE date = ?", (today_date,))
+    today = now.strftime("%Y-%m-%d")
+
+    c.execute("SELECT username, prediction FROM predictions WHERE date = ?", (today,))
     bets = c.fetchall()
 
     if not bets:
-        await update.message.reply_text("📭 Nessuna scommessa registrata per oggi.")
+        await update.message.reply_text("❌ Nessuna scommessa registrata per oggi.")
         return
 
-    # Se sono prima delle 15:30, mostra solo gli username; dopo le 15:30 mostra anche il valore della scommessa.
-    message = "🎲 <b>Scommesse di oggi:</b>\n\n"
-    if now.time() < CUTOFF_TIME:
-        for username, _ in bets:
-            message += f"@{username}\n"
-    else:
-        for username, prediction in bets:
-            message += f"@{username}: <b>{prediction}%</b>\n"
+    msg = "🎲 <b>Scommesse di oggi:</b>\n\n"
 
-    await update.message.reply_text(message, parse_mode="HTML")
+    # Dopo le 15:30: ordina le scommesse
+    if now.time() >= CUTOFF_TIME:
+        bets = sorted(bets, key=lambda x: x[1])  # ordinamento per prediction
 
+    for username, prediction in bets:
+        msg += f"@{username}: {prediction:.2f}%\n"
+
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+
+
+# Mostra il tesoretto attuale
+async def tesoretto(update: Update, context: CallbackContext):
+    today = datetime.now(ITALY_TZ).date()
+    week_start = (today - timedelta(days=today.weekday())).strftime("%Y-%m-%d")
+
+    c.execute("SELECT SUM(amount) FROM weekly_pot WHERE week_start = ?", (week_start,))
+    total = c.fetchone()[0]
+    total = total if total else 0.0
+
+    await update.message.reply_text(f"💰 <b>Tesoretto attuale:</b> {total:.2f}€", parse_mode="HTML")
 
 
 from telegram.constants import ParseMode
@@ -429,97 +442,104 @@ async def vincitore(update: Update, context: CallbackContext):
     perfect_guesser = next((p for p in players if p[3] == 0.0), None)
 
     if perfect_guesser:
-        middle = num_players // 2
-        variable_pool = 0
-        losers_info = []
+    middle = num_players // 2
+    variable_pool = 0
+    losers_info = []
 
-        for i in range(middle):
-            diff_top = players[i][3]
-            diff_bottom = players[-(i + 1)][3]
-            loss = abs(round((diff_bottom - diff_top) * 5, 2))
-            variable_pool += loss
-            losers_info.append((players[-(i + 1)][0], players[-(i + 1)][1], loss))
+    for i in range(middle):
+        diff_top = players[i][3]
+        diff_bottom = players[-(i + 1)][3]
+        loss = abs(round((diff_bottom - diff_top) * 5, 2))
+        variable_pool += loss
+        losers_info.append((players[-(i + 1)][0], players[-(i + 1)][1], loss))
 
-        # Penalità fisse sugli ultimi 3
-        penalties = {-1: -150, -2: -100, -3: -50}
-        fixed_losses = []
-        for i, penalty in penalties.items():
-            uid, uname, *_ = players[i]
-            fixed_losses.append((uid, uname, penalty))  # 👈 già negativo
+    # Penalità fisse sugli ultimi 3
+    penalties = {-1: -150, -2: -100, -3: -50}
+    fixed_losses = []
+    for i, penalty in penalties.items():
+        uid, uname, *_ = players[i]
+        fixed_losses.append((uid, uname, -penalty))
 
-        # Vincitore perfetto
-        pg_id, pg_uname, _, _ = perfect_guesser
-        total_prize = round(300 + variable_pool, 2)
+    pg_id, pg_uname, _, _ = perfect_guesser
+    total_prize = round(300 + variable_pool, 2)
 
-        # Aggiorna vincitore perfetto
-        c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (pg_uname, pg_id))
+    # Calcolo tesoretto
+    bonus_tesoretto = 0
+    if date_obj.weekday() == 4 and target_date not in CHIUSURE_MERCATO and tesoretto > 0:
+        bonus_tesoretto = tesoretto
+        total_prize += tesoretto
+        c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2) WHERE user_id = ?", (tesoretto, pg_id))
+        c.execute("DELETE FROM weekly_pot WHERE week_start = ?", (week_start,))
+
+    # Aggiorna vincitore
+    c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (pg_uname, pg_id))
+    c.execute("""
+        INSERT INTO balances (user_id, username, balance)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            balance = ROUND(balance + ?, 2),
+            username = excluded.username
+    """, (pg_id, pg_uname, total_prize, total_prize))
+
+    # Perdenti variabili
+    for loser_id, loser_uname, loss in losers_info:
+        c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (loser_uname, loser_id))
+        c.execute("""
+            INSERT INTO balances (user_id, username, balance)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                balance = ROUND(balance - ?, 2),
+                username = excluded.username
+        """, (loser_id, loser_uname, -loss, loss))
+
+    # Perdenti fissi
+    for uid, uname, fixed_penalty in fixed_losses:
+        c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (uname, uid))
         c.execute("""
             INSERT INTO balances (user_id, username, balance)
             VALUES (?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 balance = ROUND(balance + ?, 2),
                 username = excluded.username
-        """, (pg_id, pg_uname, total_prize, total_prize))
+        """, (uid, uname, fixed_penalty, fixed_penalty))
 
-        # Penalità variabile
-        for uid, uname, loss in losers_info:
-            c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (uname, uid))
-            c.execute("""
-                INSERT INTO balances (user_id, username, balance)
-                VALUES (?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    balance = ROUND(balance - ?, 2),
-                    username = excluded.username
-            """, (uid, uname, -loss, loss))
+    conn.commit()
 
-        # Penalità fisse
-        for uid, uname, fixed_penalty in fixed_losses:
-            c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (uname, uid))
-            c.execute("""
-                INSERT INTO balances (user_id, username, balance)
-                VALUES (?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    balance = ROUND(balance + ?, 2),
-                    username = excluded.username
-            """, (uid, uname, fixed_penalty, fixed_penalty))
+    # 🔻 Messaggio
+    msg = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n"
+    msg += f"<i>Tesoretto attuale: {tesoretto}€</i>\n\n"
+    msg += f"🎯 <b>Perfetto!</b> @{pg_uname} ha indovinato esattamente la chiusura!\n"
+    msg += f"🏅 Guadagna: 300€ fissi + {round(variable_pool, 2)}€ (parte variabile)"
+    if bonus_tesoretto > 0:
+        msg += f" + {bonus_tesoretto}€ (tesoretto)"
+    msg += f" = <b>{round(total_prize, 2)}€</b>\n\n"
 
-        # Messaggio
-        msg = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n"
-        msg += f"<i>Tesoretto attuale: {tesoretto}€</i>\n\n"
-        msg += f"🎯 <b>Perfetto!</b> @{pg_uname} ha indovinato esattamente la chiusura!\n"
-        msg += f"🏅 Guadagna: 300€ fissi + {round(variable_pool, 2)}€ (parte variabile) = <b>{total_prize}€</b>\n\n"
+    msg += "<b>📊 Partecipanti:</b>\n"
+    for uid, uname, pred, diff in players:
+        label = "🏆" if uid == pg_id else "•"
+        msg += f"{label} @{uname}: {pred:.2f}% (Diff: {diff:.2f}%)\n"
 
-        msg += "<b>📊 Partecipanti:</b>\n"
-        for uid, uname, pred, diff in players:
-            label = "🏆" if uid == pg_id else ""
-            msg += f"{label}• @{uname}: {pred:.2f}% (Diff: {diff:.2f}%)\n"
+    msg += "\n<b>❌ Perdenti (parte variabile):</b>\n"
+    for _, uname, loss in losers_info:
+        msg += f"• @{uname}: -{loss}€\n"
 
-        msg += "\n<b>❌ Perdenti (parte variabile):</b>\n"
-        for _, uname, loss in losers_info:
-            msg += f"• @{uname}: -{loss}€\n"
+    msg += "\n<b>💀 Penalità fisse assegnate:</b>\n"
+    for _, uname, fixed in fixed_losses:
+        msg += f"• @{uname}: {fixed}€\n"
 
-        msg += "\n<b>💀 Penalità fisse assegnate:</b>\n"
-        for _, uname, fixed in fixed_losses:
-            msg += f"• @{uname}: -{abs(fixed)}€\n"
+    if non_bettors:
+        msg += "\n<b>😴 Non hanno scommesso e perdono 10€:</b>\n"
+        for uname in non_bettors.values():
+            msg += f"• @{uname}\n"
 
-        # Penalità per non scommessa
-        if non_bettors:
-            msg += "\n<b>😴 Non hanno scommesso e perdono 10€:</b>\n"
-            for uname in non_bettors.values():
-                msg += f"• @{uname}\n"
+    if bonus_tesoretto > 0:
+        msg += f"\n💰 <b>Tesoretto settimanale:</b> @{pg_uname} riceve anche <b>{bonus_tesoretto}€</b> extra!"
+        msg += f"\n🏆 In totale si porta a casa: <b>{round(total_prize, 2)}€</b>"
 
-        # Bonus settimanale se venerdì
-        if date_obj.weekday() == 4 and target_date not in CHIUSURE_MERCATO and tesoretto > 0:
-            total_prize += tesoretto
-            c.execute("DELETE FROM weekly_pot WHERE week_start = ?", (week_start,))
-            bonus_msg = f"\n💰 <b>Tesoretto settimanale:</b> @{pg_uname} riceve anche <b>{tesoretto}€</b> extra!\n"
-        else:
-            bonus_msg = ""
-
-        c.execute("INSERT INTO winners (date, result) VALUES (?, ?)", (target_date, msg))
-        conn.commit()
-        await update.message.reply_text(msg, parse_mode="HTML")
-        return
+    c.execute("INSERT INTO winners (date, result) VALUES (?, ?)", (target_date, msg))
+    conn.commit()
+    await update.message.reply_text(msg, parse_mode="HTML")
+    return
 
 
     # --- Calcolo standard (no perfect guesser) ---
@@ -663,6 +683,7 @@ async def istruzioni(update: Update, context: CallbackContext):
         "<code>/bannati</code> – Elenco utenti bannati\n"
         "<code>/classifica</code> – Classifica aggiornata\n"
         "<code>/bilancio</code> – Mostra il tuo saldo\n"
+        "<code>/tesoretto</code> — Mostra il valore attuale del tesoretto settimanale\n"
         "<code>/id</code> – Registra il tuo ID Telegram\n"
         "<code>/istruzioni</code> – Mostra questo messaggio\n"
         "\n"
@@ -1016,6 +1037,7 @@ def main():
     app_instance.add_handler(CommandHandler("id", registra_id))
     app_instance.add_handler(CommandHandler("ban", ban))
     app_instance.add_handler(CommandHandler("unban", unban))
+    app_instance.add_handler(CommandHandler("tesoretto", tesoretto))
     app_instance.add_handler(CommandHandler("bannati", bannati))
 
     logging.info("Bot avviato con successo!")
