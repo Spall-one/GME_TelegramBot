@@ -344,26 +344,31 @@ async def chatid(update: Update, context: CallbackContext):
 
 
 
-# Funzione per mostrare le scommesse del giorno
+# Funzione per mostrare le scommesse attive
 async def scommesse(update: Update, context: CallbackContext):
     now = datetime.now(ITALY_TZ)
     today = now.strftime("%Y-%m-%d")
+    current_time = now.time()
 
+    # Recupera tutte le scommesse per oggi (ordine naturale = ordine inserimento)
     c.execute("SELECT username, prediction FROM predictions WHERE date = ?", (today,))
     bets = c.fetchall()
 
     if not bets:
-        await update.message.reply_text("❌ Nessuna scommessa registrata per oggi.")
+        await update.message.reply_text("🎲 Nessuna scommessa registrata per oggi.")
         return
 
     msg = "🎲 <b>Scommesse di oggi:</b>\n\n"
 
-    # Dopo le 15:30: ordina le scommesse
-    if now.time() >= CUTOFF_TIME:
-        bets = sorted(bets, key=lambda x: x[1])  # ordinamento per prediction
-
-    for username, prediction in bets:
-        msg += f"@{username}: {prediction:.2f}%\n"
+    if current_time >= CUTOFF_TIME:
+        # Dopo le 15:30 → ordina per prediction e mostra valori
+        bets = sorted(bets, key=lambda x: x[1])
+        for username, prediction in bets:
+            msg += f"@{username}: {prediction:.2f}%\n"
+    else:
+        # Prima delle 15:30 → ordine di inserimento, senza valori
+        for username, _ in bets:
+            msg += f"@{username}\n"
 
     await update.message.reply_text(msg, parse_mode="HTML")
 
