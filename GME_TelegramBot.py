@@ -591,13 +591,6 @@ async def vincitore(update: Update, context: CallbackContext):
 
     for uid in non_bettors:
         c.execute("UPDATE balances SET balance = ROUND(balance - 10, 2) WHERE user_id = ?", (uid,))
-        # Aggiorna tesoretto
-        week_start = (date_obj - timedelta(days=date_obj.weekday())).strftime("%Y-%m-%d")
-        c.execute("""
-            INSERT INTO weekly_pot (week_start, amount)
-            VALUES (?, 10)
-            ON CONFLICT(week_start) DO UPDATE SET amount = amount + 10
-        """, (week_start,))
 
     # 🔍 Recupera tesoretto più recente
     c.execute("SELECT week_start, amount FROM weekly_pot ORDER BY week_start DESC LIMIT 1")
