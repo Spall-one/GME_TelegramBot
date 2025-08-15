@@ -387,7 +387,6 @@ async def tesoretto(update: Update, context: CallbackContext):
 
 
 from telegram.constants import ParseMode
-
 async def vincitore(update: Update, context: CallbackContext):
     now = datetime.now(ITALY_TZ)
     date_offset = -1 if context.args and context.args[0] == "yesterday" else 0
@@ -442,8 +441,8 @@ async def vincitore(update: Update, context: CallbackContext):
     c.execute("SELECT amount FROM weekly_pot WHERE week_start = ?", (week_start,))
     row = c.fetchone()
     tesoretto = round(row[0], 2) if row else 0.0
-    
-       # Determina se c'è un perfect guesser
+
+    # Perfect guess?
     perfect_guesser = next((p for p in players if p[3] == 0.0), None)
 
     if perfect_guesser:
@@ -458,7 +457,7 @@ async def vincitore(update: Update, context: CallbackContext):
             variable_pool += loss
             losers_info.append((players[-(i + 1)][0], players[-(i + 1)][1], loss))
 
-        # Penalità fisse sugli ultimi 3
+        # Penalità fisse
         penalties = {-1: -150, -2: -100, -3: -50}
         fixed_losses = []
         for i, penalty in penalties.items():
@@ -467,16 +466,14 @@ async def vincitore(update: Update, context: CallbackContext):
 
         pg_id, pg_uname, _, _ = perfect_guesser
         total_prize = round(300 + variable_pool, 2)
-
-        # Calcolo tesoretto
         bonus_tesoretto = 0
+
         if date_obj.weekday() == 4 and target_date not in CHIUSURE_MERCATO and tesoretto > 0:
             bonus_tesoretto = tesoretto
             total_prize += tesoretto
             c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2) WHERE user_id = ?", (tesoretto, pg_id))
             c.execute("DELETE FROM weekly_pot WHERE week_start = ?", (week_start,))
 
-        # Aggiorna vincitore
         c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (pg_uname, pg_id))
         c.execute("""
             INSERT INTO balances (user_id, username, balance)
@@ -486,7 +483,6 @@ async def vincitore(update: Update, context: CallbackContext):
                 username = excluded.username
         """, (pg_id, pg_uname, total_prize, total_prize))
 
-        # Perdenti variabili
         for loser_id, loser_uname, loss in losers_info:
             c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (loser_uname, loser_id))
             c.execute("""
@@ -497,7 +493,6 @@ async def vincitore(update: Update, context: CallbackContext):
                     username = excluded.username
             """, (loser_id, loser_uname, -loss, loss))
 
-        # Perdenti fissi
         for uid, uname, fixed_penalty in fixed_losses:
             c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (uname, uid))
             c.execute("""
@@ -510,7 +505,7 @@ async def vincitore(update: Update, context: CallbackContext):
 
         conn.commit()
 
-        # 🔻 Messaggio
+        # Output
         msg = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n"
         msg += f"<i>Tesoretto attuale: {tesoretto}€</i>\n\n"
         msg += f"🎯 <b>Perfetto!</b> @{pg_uname} ha indovinato esattamente la chiusura!\n"
@@ -546,19 +541,16 @@ async def vincitore(update: Update, context: CallbackContext):
         await update.message.reply_text(msg, parse_mode="HTML")
         return
 
-
-    # --- Calcolo standard (no perfect guesser) ---
+    # --- Calcolo standard ---
     rewards = {1: 150, 2: 100, 3: 50}
     penalties = {-1: -150, -2: -100, -3: -50}
     risk_multiplier = 5
     changes = {uid: [uname, 0.0, 0.0] for uid, uname, _, _ in players}
 
-    # Premi e penalità fisse
     for i in range(3):
         changes[players[i][0]][1] += rewards[i + 1]
         changes[players[-(i + 1)][0]][1] += penalties[-(i + 1)]
 
-    # Parte variabile simmetrica
     for i in range(num_players // 2):
         top = players[i]
         bottom = players[-(i + 1)]
@@ -566,13 +558,11 @@ async def vincitore(update: Update, context: CallbackContext):
         changes[top[0]][2] += delta
         changes[bottom[0]][2] -= delta
 
-    # Utente centrale se dispari
     if num_players % 2 == 1:
         mid_uid = players[num_players // 2][0]
         changes[mid_uid][1] = 0.0
         changes[mid_uid][2] = 0.0
 
-    # Aggiornamento balances
     for uid, (uname, fisso, var) in changes.items():
         totale = round(fisso + var, 2)
         c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (uname, uid))
@@ -584,15 +574,7 @@ async def vincitore(update: Update, context: CallbackContext):
                 username = excluded.username
         """, (uid, uname, totale, totale))
 
-    # 🔻 Penalità per non scommessa
-    c.execute("SELECT user_id, username FROM balances")
-    all_users = dict(c.fetchall())
-    non_bettors = {uid: uname for uid, uname in all_users.items() if uid not in changes}
-
-    for uid in non_bettors:
-        c.execute("UPDATE balances SET balance = ROUND(balance - 10, 2) WHERE user_id = ?", (uid,))
-
-    # 🔍 Recupera tesoretto più recente
+    # Recupero tesoretto solo per visualizzazione
     c.execute("SELECT week_start, amount FROM weekly_pot ORDER BY week_start DESC LIMIT 1")
     tesoretto_row = c.fetchone()
     tesoretto = tesoretto_row[1] if tesoretto_row else 0
@@ -600,7 +582,7 @@ async def vincitore(update: Update, context: CallbackContext):
 
     conn.commit()
 
-    # 📩 Output classifica
+    # Output
     msg = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n"
     msg += f"<i>Tesoretto attuale: {tesoretto}€</i>\n\n"
 
@@ -623,13 +605,11 @@ async def vincitore(update: Update, context: CallbackContext):
             f"(Diff: {diff:.2f}%) | Fisso: {fisso}€, Variabile: {var}€, Totale: {total}€\n"
         )
 
-    # Penalità inattivi
     if non_bettors:
         msg += "\n<b>😴 Non hanno scommesso e perdono 10€:</b>\n"
         for uname in non_bettors.values():
             msg += f"• @{uname}\n"
 
-    # 💰 Bonus tesoretto settimanale se venerdì
     if date_obj.weekday() == 4 and target_date not in CHIUSURE_MERCATO and tesoretto > 0:
         c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2) WHERE user_id = ?", (tesoretto, winner_uid))
         c.execute("DELETE FROM weekly_pot WHERE week_start = ?", (tesoretto_week_start,))
@@ -642,7 +622,6 @@ async def vincitore(update: Update, context: CallbackContext):
     c.execute("INSERT INTO winners (date, result) VALUES (?, ?)", (target_date, msg))
     conn.commit()
     await update.message.reply_text(msg, parse_mode="HTML")
-
 
 async def istruzioni(update: Update, context: CallbackContext):
     messaggio = (
