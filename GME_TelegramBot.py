@@ -387,93 +387,118 @@ async def tesoretto(update: Update, context: CallbackContext):
 
 
 from telegram.constants import ParseMode
+from telegram.constants import ParseMode
+
 async def vincitore(update: Update, context: CallbackContext):
+    """
+    Calcola risultati e bilanci del giorno (o di ieri con 'yesterday').
+    - Recupera le previsioni della data target.
+    - Applica regole di premi/penalità (parte fissa + parte variabile).
+    - Gestisce il caso 'perfect guesser' con premi speciali e penalità fisse agli ultimi 3.
+    - Aggiorna il tesoretto (inattivi -10€) e lo assegna il venerdì.
+    - Salva un messaggio 'risultato' in winners per evitare ricalcoli/duplicati.
+
+    NOTE FIX: nel ramo perfect guesser le penalità fisse agli ultimi 3 sono mantenute NEGATIVE
+    e sommate al saldo (balance + numero_negativo) così da sottrarre correttamente.
+    """
     now = datetime.now(ITALY_TZ)
     date_offset = -1 if context.args and context.args[0] == "yesterday" else 0
     target_date = (now + timedelta(days=date_offset)).strftime("%Y-%m-%d")
     date_obj = datetime.strptime(target_date, "%Y-%m-%d")
     week_start = (date_obj - timedelta(days=date_obj.weekday())).strftime("%Y-%m-%d")
 
+    # Blocco di sicurezza: non calcolare oggi prima della chiusura del mercato
     if date_offset == 0 and now.time() < MARKET_CLOSE_TIME:
         await update.message.reply_text("⏳ Il mercato è ancora aperto! Puoi controllare il vincitore dopo le 22:10.")
         return
 
+    # Giorno festivo/chiuso: nessun calcolo
     if target_date in CHIUSURE_MERCATO:
         await update.message.reply_text(f"❌ Il mercato era chiuso il {target_date}. Nessuna vincita calcolata.")
         return
 
+    # Evita ricalcoli se abbiamo già salvato l'esito
     c.execute("SELECT result FROM winners WHERE date = ?", (target_date,))
     existing_result = c.fetchone()
     if existing_result:
         await update.message.reply_text(existing_result[0], parse_mode="HTML")
         return
 
+    # Carica previsioni del giorno target
     c.execute("SELECT user_id, username, prediction FROM predictions WHERE date = ?", (target_date,))
     predictions = c.fetchall()
     if not predictions:
         await update.message.reply_text(f"Nessuna previsione registrata per il {target_date}.")
         return
 
+    # Variazione % GME (oggi) usata come riferimento per la data target
     closing_percentage = get_gme_closing_percentage()
     if closing_percentage is None:
         await update.message.reply_text("⚠️ La variazione percentuale di GME non è ancora disponibile. Riprova più tardi.")
         return
 
+    # Costruisci lista giocatori: (uid, uname, pred, diff_assoluta)
     players = [(uid, uname, pred, round(abs(pred - closing_percentage), 2)) for uid, uname, pred in predictions]
-    players.sort(key=lambda x: x[3])
+    players.sort(key=lambda x: x[3])  # crescente per differenza → i migliori all'inizio
     num_players = len(players)
 
-    # Calcola penalità non scommettitori e aggiorna tesoretto
+    # Penalità -10€ per gli inattivi oggi + accumulo nel tesoretto settimanale
     c.execute("SELECT user_id, username FROM balances")
-    all_users = dict(c.fetchall())
-    non_bettors = {uid: uname for uid, uname in all_users.items() if uid not in [p[0] for p in players]}
+    all_users = dict(c.fetchall())  # {user_id: username}
+    bettors_today = {p[0] for p in players}
+    non_bettors = {uid: uname for uid, uname in all_users.items() if uid not in bettors_today}
 
     penalty_total = 10 * len(non_bettors)
     for uid in non_bettors:
         c.execute("UPDATE balances SET balance = ROUND(balance - 10, 2) WHERE user_id = ?", (uid,))
-
+    # Accumula nel tesoretto della settimana corrente
     c.execute("""
         INSERT INTO weekly_pot (week_start, amount)
         VALUES (?, ?)
         ON CONFLICT(week_start) DO UPDATE SET amount = ROUND(amount + ?, 2)
     """, (week_start, penalty_total, penalty_total))
 
+    # Leggi tesoretto attuale per messaggistica/bonus del venerdì
     c.execute("SELECT amount FROM weekly_pot WHERE week_start = ?", (week_start,))
     row = c.fetchone()
     tesoretto = round(row[0], 2) if row else 0.0
 
-    # Perfect guess?
+    # Caso "perfect guesser": almeno un giocatore con diff == 0.00
     perfect_guesser = next((p for p in players if p[3] == 0.0), None)
 
     if perfect_guesser:
         middle = num_players // 2
-        variable_pool = 0
-        losers_info = []
-
+        variable_pool = 0.0
+        losers_info = []  # [(loser_id, loser_uname, loss_variabile_pos)]
+        # Parte variabile: i top vincono la differenza * 5 rispetto agli opposti in fondo
         for i in range(middle):
             diff_top = players[i][3]
             diff_bottom = players[-(i + 1)][3]
-            loss = abs(round((diff_bottom - diff_top) * 5, 2))
+            loss = abs(round((diff_bottom - diff_top) * 5, 2))  # positivo
             variable_pool += loss
             losers_info.append((players[-(i + 1)][0], players[-(i + 1)][1], loss))
 
-        # Penalità fisse
-        penalties = {-1: -150, -2: -100, -3: -50}
-        fixed_losses = []
-        for i, penalty in penalties.items():
-            uid, uname, *_ = players[i]
-            fixed_losses.append((uid, uname, -penalty))
+        # 🔧 FIX PENALE FISSE: manteniamo i valori NEGATIVI e NON invertiamo il segno
+        # Ordine esplicito: ultimi 3 della classifica (indici -1, -2, -3)
+        fixed_penalties = [(-1, -150), (-2, -100), (-3, -50)]
+        fixed_losses = []  # [(uid, uname, penalty_negativa)]
+        for idx, penalty in fixed_penalties:
+            uid, uname, *_ = players[idx]
+            fixed_losses.append((uid, uname, penalty))  # penalty è già NEGATIVA
 
+        # Premio del perfect guesser: 300€ + tutta la parte variabile accumulata
         pg_id, pg_uname, _, _ = perfect_guesser
         total_prize = round(300 + variable_pool, 2)
-        bonus_tesoretto = 0
+        bonus_tesoretto = 0.0
 
+        # Venerdì: assegna anche il tesoretto (se > 0 e giorno non festivo)
         if date_obj.weekday() == 4 and target_date not in CHIUSURE_MERCATO and tesoretto > 0:
             bonus_tesoretto = tesoretto
-            total_prize += tesoretto
+            total_prize = round(total_prize + tesoretto, 2)
             c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2) WHERE user_id = ?", (tesoretto, pg_id))
             c.execute("DELETE FROM weekly_pot WHERE week_start = ?", (week_start,))
 
+        # Accredita il premio al perfect guesser
         c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (pg_uname, pg_id))
         c.execute("""
             INSERT INTO balances (user_id, username, balance)
@@ -483,6 +508,7 @@ async def vincitore(update: Update, context: CallbackContext):
                 username = excluded.username
         """, (pg_id, pg_uname, total_prize, total_prize))
 
+        # Addebita le perdite variabili ai corrispettivi "ultimi"
         for loser_id, loser_uname, loss in losers_info:
             c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (loser_uname, loser_id))
             c.execute("""
@@ -493,6 +519,7 @@ async def vincitore(update: Update, context: CallbackContext):
                     username = excluded.username
             """, (loser_id, loser_uname, -loss, loss))
 
+        # 🧲 Applica le penalità fisse (NEGATIVE) agli ultimi 3 → balance + (negativo) = sottrazione ✅
         for uid, uname, fixed_penalty in fixed_losses:
             c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (uname, uid))
             c.execute("""
@@ -505,7 +532,7 @@ async def vincitore(update: Update, context: CallbackContext):
 
         conn.commit()
 
-        # Output
+        # Messaggio di output dettagliato
         msg = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n"
         msg += f"<i>Tesoretto attuale: {tesoretto}€</i>\n\n"
         msg += f"🎯 <b>Perfetto!</b> @{pg_uname} ha indovinato esattamente la chiusura!\n"
@@ -525,6 +552,7 @@ async def vincitore(update: Update, context: CallbackContext):
 
         msg += "\n<b>💀 Penalità fisse assegnate:</b>\n"
         for _, uname, fixed in fixed_losses:
+            # fixed è negativo: lo mostriamo così (es. -150€)
             msg += f"• @{uname}: {fixed}€\n"
 
         if non_bettors:
@@ -541,16 +569,20 @@ async def vincitore(update: Update, context: CallbackContext):
         await update.message.reply_text(msg, parse_mode="HTML")
         return
 
-    # --- Calcolo standard ---
+    # --- Calcolo standard (nessun perfect guesser) ---
     rewards = {1: 150, 2: 100, 3: 50}
     penalties = {-1: -150, -2: -100, -3: -50}
     risk_multiplier = 5
+
+    # changes: uid → [username, fisso, variabile]
     changes = {uid: [uname, 0.0, 0.0] for uid, uname, _, _ in players}
 
+    # Premi ai primi 3 e penalità (negative) agli ultimi 3
     for i in range(3):
         changes[players[i][0]][1] += rewards[i + 1]
         changes[players[-(i + 1)][0]][1] += penalties[-(i + 1)]
 
+    # Parte variabile: top vs bottom
     for i in range(num_players // 2):
         top = players[i]
         bottom = players[-(i + 1)]
@@ -558,11 +590,13 @@ async def vincitore(update: Update, context: CallbackContext):
         changes[top[0]][2] += delta
         changes[bottom[0]][2] -= delta
 
+    # Se dispari, il giocatore centrale non guadagna né perde dalla parte variabile o fissa
     if num_players % 2 == 1:
         mid_uid = players[num_players // 2][0]
         changes[mid_uid][1] = 0.0
         changes[mid_uid][2] = 0.0
 
+    # Persisti i cambi saldo
     for uid, (uname, fisso, var) in changes.items():
         totale = round(fisso + var, 2)
         c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (uname, uid))
@@ -574,7 +608,7 @@ async def vincitore(update: Update, context: CallbackContext):
                 username = excluded.username
         """, (uid, uname, totale, totale))
 
-    # Recupero tesoretto solo per visualizzazione
+    # Tesoretto per messaggio/bonus del venerdì
     c.execute("SELECT week_start, amount FROM weekly_pot ORDER BY week_start DESC LIMIT 1")
     tesoretto_row = c.fetchone()
     tesoretto = tesoretto_row[1] if tesoretto_row else 0
@@ -582,15 +616,14 @@ async def vincitore(update: Update, context: CallbackContext):
 
     conn.commit()
 
-    # Output
+    # Messaggio di output (standard)
     msg = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n"
     msg += f"<i>Tesoretto attuale: {tesoretto}€</i>\n\n"
 
     sorted_results = sorted(
         changes.items(),
-        key=lambda item: -(item[1][1] + item[1][2])
+        key=lambda item: -(item[1][1] + item[1][2])  # ordina per totale desc
     )
-
     winner_uid, (winner_username, winner_fisso, winner_var) = sorted_results[0]
     winner_tot = round(winner_fisso + winner_var, 2)
 
@@ -610,6 +643,7 @@ async def vincitore(update: Update, context: CallbackContext):
         for uname in non_bettors.values():
             msg += f"• @{uname}\n"
 
+    # Bonus tesoretto al vincitore del venerdì (se week pot > 0)
     if date_obj.weekday() == 4 and target_date not in CHIUSURE_MERCATO and tesoretto > 0:
         c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2) WHERE user_id = ?", (tesoretto, winner_uid))
         c.execute("DELETE FROM weekly_pot WHERE week_start = ?", (tesoretto_week_start,))
@@ -622,6 +656,7 @@ async def vincitore(update: Update, context: CallbackContext):
     c.execute("INSERT INTO winners (date, result) VALUES (?, ?)", (target_date, msg))
     conn.commit()
     await update.message.reply_text(msg, parse_mode="HTML")
+
 
 async def istruzioni(update: Update, context: CallbackContext):
     messaggio = (
