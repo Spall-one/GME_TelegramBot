@@ -1,85 +1,79 @@
+# GME PredictorBot – versione stabilizzata per Render (polling)
+# Python 3.11 – Librerie: python-telegram-bot v20+, sqlite3, requests, flask, dotenv, asyncio
+
 import os
 import logging
 import sqlite3
 import requests
 import random
-import time as time_module  # Rinominato per evitare conflitti
-import threading
-import asyncio
-import nest_asyncio
-from flask import Flask
-import threading
-import os
-from telegram import Update
-from telegram.ext import Application, CommandHandler, CallbackContext
 from datetime import datetime, time, timedelta
-from zoneinfo import ZoneInfo  # Import per il fuso orario dinamico
-from telegram.constants import ParseMode
-from datetime import datetime, timedelta
-
-
-nest_asyncio.apply()
-
-# Configura logging
-logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
+from flask import Flask
+from telegram import Update
+from telegram.constants import ParseMode
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+)
 
-# Load environment variables
+# ---------------------- CONFIG BASE ----------------------
 load_dotenv()
 
-# Orari di apertura e chiusura delle scommesse
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+
 START_TIME = time(0, 0)           # Apertura a mezzanotte
-CUTOFF_TIME = time(15, 30)         # Chiusura alle 15:30
+CUTOFF_TIME = time(15, 30)        # Chiusura alle 15:30
+MARKET_CLOSE_TIME = time(22, 10)  # Orario dopo cui calcolare /vincitore
+
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+API_KEY = os.getenv("FINNHUB_API_KEY")
 GME_TICKER = "GME"
-API_KEY = os.getenv("FINNHUB_API_KEY")  # Finnhub API Key
-GROUP_TOPIC_CHAT_ID = -1001425180088   # ID del topic (o chat) in cui inviare i reminder
-CUTOFF_TIME_STR = f"{CUTOFF_TIME.hour:02d}:{CUTOFF_TIME.minute:02d}" 
 
-# Imposta il fuso orario italiano in modo dinamico (gestisce automaticamente DST)
+# Chat o topic dove inviare i reminder
+GROUP_TOPIC_CHAT_ID = -1001425180088
+
+# Fuso orario Italia (gestisce automaticamente DST)
 ITALY_TZ = ZoneInfo("Europe/Rome")
-MARKET_CLOSE_TIME = time(22, 10)
 
-ADMIN_CHAT_ID = 68001743  # Il tuo user ID
+ADMIN_CHAT_ID = 68001743  # il tuo user_id
 
+# Giorni di chiusura mercato USA 2025 (festività principali)
+CHIUSURE_MERCATO = {
+    "2025-01-01", "2025-04-18", "2025-05-26", "2025-06-19",
+    "2025-07-04", "2025-09-01", "2025-11-27", "2025-12-25", "2025-12-26"
+}
+
+# ---------------------- FLASK (UNICO) ----------------------
 app = Flask(__name__)
 
-
-@app.route('/')
+@app.route("/")
 def home():
-    return "Bot is running!", 200
-
-@app.route('/health')
-def health():
-    # Verifica stato del bot e ritorna 200 OK se è attivo
-    return {"status": "up", "timestamp": time_module.time()}, 200
-
-def run():
-    port = int(os.environ.get("PORT", 8080))
-    try:
-        app.run(host="0.0.0.0", port=port)
-    except Exception as e:
-        logging.error(f"Keep-alive server error: {e}")
-        time_module.sleep(5)  # Wait before retrying
-        run()  # Restart server
+    return {"status": "up", "timestamp": datetime.now().timestamp()}, 200
 
 def start_keep_alive_server():
-    t = threading.Thread(target=run, daemon=True)
+    port = int(os.environ.get("PORT", "10000"))
+    import threading
+    t = threading.Thread(target=lambda: app.run(host="0.0.0.0", port=port), daemon=True)
     t.start()
-    logging.info("Keep-alive server started on port 8080")
+    logging.info(f"Keep-alive server started on port {port}")
 
-# Avvia il server di keep-alive
-start_keep_alive_server()
-
-
-# Database setup
+# ---------------------- DATABASE ----------------------
 DB_FILE = "predictions.db"
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 c = conn.cursor()
 
-# Crea tabella predictions
-c.execute('''
+# Migliora la resilienza di SQLite
+conn.execute("PRAGMA journal_mode=WAL;")
+conn.execute("PRAGMA busy_timeout=5000;")  # 5s
+
+# Tabelle
+c.execute("""
     CREATE TABLE IF NOT EXISTS predictions (
         user_id INTEGER,
         username TEXT,
@@ -87,233 +81,201 @@ c.execute('''
         date TEXT,
         UNIQUE(user_id, date)
     )
-''')
-
-# Crea tabella balances (senza UNIQUE su username)
-c.execute('''
+""")
+c.execute("""
     CREATE TABLE IF NOT EXISTS balances (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
-        balance INTEGER DEFAULT 0
+        balance REAL DEFAULT 0
     )
-''')
-
-# Crea tabella winners
-c.execute('''
+""")
+c.execute("""
     CREATE TABLE IF NOT EXISTS winners (
         date TEXT PRIMARY KEY,
         result TEXT
     )
-''')
-
-# Crea tabella bans
-c.execute('''
+""")
+c.execute("""
     CREATE TABLE IF NOT EXISTS bans (
         user_id INTEGER PRIMARY KEY,
         ban_until TEXT
     )
-''')
-
-# Crea tabella tesoretto
-c.execute('''
+""")
+c.execute("""
     CREATE TABLE IF NOT EXISTS weekly_pot (
         week_start TEXT PRIMARY KEY,
-         amount REAL DEFAULT 0
-    );
-''')
-
-
+        amount REAL DEFAULT 0
+    )
+""")
 conn.commit()
 
-# Lista di giorni in cui il mercato è chiuso (festività, chiusure programmate)
-CHIUSURE_MERCATO = {
-    "2025-01-01", "2025-07-04", "2025-12-25", "2025-12-26", "2025-11-27", "2025-04-18", "2025-05-26", "2025-06-19", "2025-09-01"
-}
-
-# Funzione per ottenere la variazione percentuale attuale di GME
+# ---------------------- FUNZIONI DATI GME ----------------------
 def get_gme_closing_percentage():
-
+    """Variazione % (oggi vs prev close) da Finnhub."""
     url = f"https://finnhub.io/api/v1/quote?symbol={GME_TICKER}&token={API_KEY}"
-
     try:
-        response = requests.get(url)
-        data = response.json()
-        prev_close = data.get("pc", None)
-        close = data.get("c", None)
-
+        data = requests.get(url, timeout=10).json()
+        prev_close = data.get("pc")
+        close = data.get("c")
         if prev_close is None or close is None:
             return None
-
         return round(((close - prev_close) / prev_close) * 100, 2)
     except Exception as e:
-        logging.error(f"Errore nel recupero dei dati da Finnhub: {e}")
+        logging.error(f"Errore Finnhub: {e}")
         return None
 
-# Funzione per ottenere il valore della chiusura di mercato di ieri
 def get_gme_closing_percentage_yesterday():
-
-    from datetime import datetime, timedelta
-
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    url = f"https://finnhub.io/api/v1/quote?symbol={GME_TICKER}&token={API_KEY}"
-
+    """Calcolo alternativo 'ieri' (non usato dal flusso principale, ma tenuto per utilità)."""
     try:
-        response = requests.get(url)
-        data = response.json()
-        prev_close = data.get("pc", None)  # Prezzo di chiusura di ieri
-        close = data.get("c", None)  # Prezzo di chiusura attuale (oggi)
-
+        data = requests.get(
+            f"https://finnhub.io/api/v1/quote?symbol={GME_TICKER}&token={API_KEY}",
+            timeout=10
+        ).json()
+        prev_close = data.get("pc")
+        close = data.get("c")
         if prev_close is None or close is None:
             return None
-
         return round(((prev_close - close) / close) * 100, 2)
     except Exception as e:
-        logging.error(f"Errore nel recupero dei dati di ieri da Finnhub: {e}")
+        logging.error(f"Errore Finnhub (ieri): {e}")
         return None
 
-
-
-# Funzione per registrare una scommessa
-async def bet(update: Update, context: CallbackContext):
+# ---------------------- COMMAND HANDLERS ----------------------
+async def bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.message.from_user.username
     user_id = update.message.from_user.id
     now = datetime.now(ITALY_TZ)
     today_date = now.strftime("%Y-%m-%d")
-    weekday = now.weekday()  # 0 = Lunedì, 6 = Domenica
+    weekday = now.weekday()  # 0 lunedì
 
-    # Controllo se l'utente è bannato
+    # ban attivo?
     c.execute("SELECT ban_until FROM bans WHERE user_id = ?", (user_id,))
     ban_record = c.fetchone()
     if ban_record:
         ban_until = datetime.strptime(ban_record[0], "%Y-%m-%d").date()
-        today = datetime.now(ITALY_TZ).date()
-        if today <= ban_until:
-            await update.message.reply_text(f"🚫 Sei bannato fino al {ban_until.strftime('%d/%m/%Y')}. Non puoi scommettere.")
+        if now.date() <= ban_until:
+            await update.message.reply_text(
+                f"🚫 Sei bannato fino al {ban_until.strftime('%d/%m/%Y')}."
+            )
             return
 
     if not username:
-        await update.message.reply_text("⚠️ Non posso registrare la tua scommessa perché non hai un username su Telegram! Impostane uno e riprova.")
+        await update.message.reply_text(
+            "⚠️ Imposta un username Telegram per poter scommettere."
+        )
         return
 
     if weekday in [5, 6] or today_date in CHIUSURE_MERCATO:
-        await update.message.reply_text(f"❌ Il mercato è chiuso oggi ({today_date}). Le scommesse riapriranno il prossimo giorno utile.")
+        await update.message.reply_text(
+            f"❌ Il mercato è chiuso oggi ({today_date})."
+        )
         return
 
-    if now.time() < START_TIME or now.time() > CUTOFF_TIME:
-        await update.message.reply_text(f"❌ Le previsioni sono chiuse. Puoi scommettere tra 00:00 e {CUTOFF_TIME_STR} nei giorni di mercato aperto.")
+    if not (START_TIME <= now.time() <= CUTOFF_TIME):
+        cutoff_str = f"{CUTOFF_TIME.hour:02d}:{CUTOFF_TIME.minute:02d}"
+        await update.message.reply_text(
+            f"❌ Previsioni chiuse. Puoi scommettere tra 00:00 e {cutoff_str}."
+        )
         return
 
     try:
         prediction = round(float(context.args[0]), 2)
     except (IndexError, ValueError):
-        await update.message.reply_text("❗ Usa il comando così: /bet 2.5 (dove 2.5 è la tua previsione di variazione %)")
+        await update.message.reply_text("❗ Usa: /bet 2.5")
         return
 
-    # Controllo scommessa doppia per lo stesso utente
-    c.execute("SELECT prediction FROM predictions WHERE user_id = ? AND date = ?", (user_id, today_date))
-    existing_bet = c.fetchone()
-    if existing_bet:
+    # doppia scommessa?
+    c.execute("SELECT 1 FROM predictions WHERE user_id = ? AND date = ?", (user_id, today_date))
+    if c.fetchone():
         try:
             await update.message.delete()
         except Exception as e:
-            logging.error(f"Errore nel cancellare il messaggio: {e}")
-    
-        # Questo messaggio deve uscire SEMPRE
+            logging.error(f"Errore delete msg: {e}")
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            message_thread_id=update.message.message_thread_id,
+            message_thread_id=getattr(update.message, "message_thread_id", None),
             text="⚠️ Hai già scommesso oggi! Non puoi cambiarla."
         )
         return
 
-    # Controllo per scommesse identiche da utenti diversi
+    # stesso valore già preso?
     c.execute("SELECT 1 FROM predictions WHERE prediction = ? AND date = ?", (prediction, today_date))
-    same_prediction = c.fetchone()
-    if same_prediction:
+    if c.fetchone():
         try:
             await update.message.delete()
         except Exception as e:
-            logging.error(f"Errore nel cancellare il messaggio: {e}")
-    
-        # Anche qui: deve SEMPRE apparire
+            logging.error(f"Errore delete msg: {e}")
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            message_thread_id=update.message.message_thread_id,
-            text="⚠️ Questo valore è già stato scommesso da un altro utente! Prova con un valore diverso."
-         )
+            message_thread_id=getattr(update.message, "message_thread_id", None),
+            text="⚠️ Valore già preso da un altro utente. Scegline uno diverso."
+        )
         return
 
-    # Salva la scommessa nel database
-    c.execute("INSERT INTO predictions (user_id, username, prediction, date) VALUES (?, ?, ?, ?)",
-              (user_id, username, prediction, today_date))
+    # salva
+    c.execute(
+        "INSERT INTO predictions (user_id, username, prediction, date) VALUES (?, ?, ?, ?)",
+        (user_id, username, prediction, today_date)
+    )
     conn.commit()
 
-    # Messaggio di conferma per il gruppo (senza mostrare il valore)
-    confirmation_message = (
-        f"✅ <b>Scommessa registrata!</b>\n"
-        f"@{username} ha scommesso per la giornata odierna ({today_date})."
-    )
+    # conferma nel gruppo (senza valore)
     try:
         await update.message.delete()
     except Exception as e:
-        logging.error(f"Errore nel cancellare il messaggio: {e}")
-    thread_id = getattr(update.message, "message_thread_id", None)
+        logging.error(f"Errore delete msg: {e}")
+
+    confirmation = (
+        f"✅ <b>Scommessa registrata!</b>\n"
+        f"@{username} ha scommesso per oggi ({today_date})."
+    )
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=confirmation_message,
-        parse_mode="HTML",
-        message_thread_id=thread_id
+        text=confirmation,
+        parse_mode=ParseMode.HTML,
+        message_thread_id=getattr(update.message, "message_thread_id", None)
     )
 
-    # Invia i dettagli completi della scommessa in modo privato all'amministratore
-    admin_message = (
+    # dettaglio all'admin
+    admin_msg = (
         f"📢 Nuova scommessa registrata:\n"
         f"Utente: @{username} (ID: <code>{user_id}</code>)\n"
         f"Valore scommesso: {prediction}%\n"
         f"Data: {today_date}"
     )
-
     try:
         await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
-            text=admin_message,
-            parse_mode="HTML"
+            text=admin_msg,
+            parse_mode=ParseMode.HTML
         )
     except Exception as e:
-        logging.error(f"Errore nell'invio del messaggio all'amministratore: {e}")
+        logging.error(f"Errore invio all'admin: {e}")
 
-
-# Funzione per mostrare il bilancio di un utente
-async def bilancio(update: Update, context: CallbackContext):
+async def bilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.message.from_user.username
-
-    logging.info(f"Comando /bilancio richiesto da: @{username}")
-
     if not username:
-        await update.message.reply_text("⚠️ Non posso trovare il tuo bilancio perché non hai un username su Telegram! Impostane uno e riprova.")
+        await update.message.reply_text(
+            "⚠️ Non hai un username Telegram, non posso trovarti."
+        )
         return
 
     c.execute("SELECT balance FROM balances WHERE username = ?", (username,))
-    result = c.fetchone()
-
-    if result is None:
-        balance = 0.00
-        logging.info(f"@{username} non presente in balances, aggiunto con saldo 0€.")
-        c.execute("INSERT INTO balances (user_id, username, balance) VALUES (?, ?, ?)", (update.message.from_user.id, username, balance))
+    row = c.fetchone()
+    if row is None:
+        c.execute(
+            "INSERT INTO balances (user_id, username, balance) VALUES (?, ?, ?)",
+            (update.message.from_user.id, username, 0.0)
+        )
         conn.commit()
+        balance = 0.0
     else:
-        balance = round(result[0], 2)  # Arrotondiamo a due decimali
-        logging.info(f"Bilancio di @{username}: {balance}€")
+        balance = round(row[0], 2)
 
     await update.message.reply_text(f"💰 Il tuo saldo attuale è: {balance}€")
 
-async def classifica(update: Update, context: CallbackContext):
-    """
-    Mostra la classifica completa aggregando i bilanci per user_id,
-    in modo da evitare doppie visualizzazioni per errori di scrittura storici.
-    """
+async def classifica(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # Aggrega per user_id ed estrae l'ultimo username registrato
         c.execute("""
             SELECT b.user_id, MAX(b.username) as username, ROUND(SUM(b.balance), 2) as total_balance
             FROM balances b
@@ -321,185 +283,142 @@ async def classifica(update: Update, context: CallbackContext):
             ORDER BY total_balance DESC
         """)
         rankings = c.fetchall()
-
         if not rankings:
             await update.message.reply_text("📭 Nessun bilancio disponibile.")
             return
 
-        message = "<b>🏆 Classifica completa:</b>\n\n"
-        for i, (_, username, balance) in enumerate(rankings, start=1):
-            message += f"<b>{i}.</b> @{username}: <b>{balance}€</b>\n"
-
-        await update.message.reply_text(message, parse_mode="HTML")
-
+        msg = "<b>🏆 Classifica completa:</b>\n\n"
+        for i, (_, uname, bal) in enumerate(rankings, start=1):
+            msg += f"<b>{i}.</b> @{uname}: <b>{bal}€</b>\n"
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
     except Exception as e:
-        logging.error(f"Errore nella generazione della classifica: {e}")
+        logging.error(f"Errore classifica: {e}")
         await update.message.reply_text("❌ Errore nel recupero della classifica.")
 
-
-
-
-async def chatid(update: Update, context: CallbackContext):
+async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Il chat_id di questa chat è: {update.effective_chat.id}")
 
-
-
-# Funzione per mostrare le scommesse attive
-async def scommesse(update: Update, context: CallbackContext):
+async def scommesse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(ITALY_TZ)
     today = now.strftime("%Y-%m-%d")
     current_time = now.time()
 
-    # Recupera tutte le scommesse per oggi (ordine naturale = ordine inserimento)
     c.execute("SELECT username, prediction FROM predictions WHERE date = ?", (today,))
     bets = c.fetchall()
-
     if not bets:
         await update.message.reply_text("🎲 Nessuna scommessa registrata per oggi.")
         return
 
     msg = "🎲 <b>Scommesse di oggi:</b>\n\n"
-
     if current_time >= CUTOFF_TIME:
-        # Dopo le 15:30 → ordina per prediction e mostra valori
         bets = sorted(bets, key=lambda x: x[1])
-        for username, prediction in bets:
-            msg += f"@{username}: {prediction:.2f}%\n"
+        for uname, pred in bets:
+            msg += f"@{uname}: {pred:.2f}%\n"
     else:
-        # Prima delle 15:30 → ordine di inserimento, senza valori
-        for username, _ in bets:
-            msg += f"@{username}\n"
+        for uname, _ in bets:
+            msg += f"@{uname}\n"
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
-    await update.message.reply_text(msg, parse_mode="HTML")
-
-
-
-# Mostra il tesoretto attuale
-async def tesoretto(update: Update, context: CallbackContext):
+async def tesoretto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = datetime.now(ITALY_TZ).date()
     week_start = (today - timedelta(days=today.weekday())).strftime("%Y-%m-%d")
-
     c.execute("SELECT SUM(amount) FROM weekly_pot WHERE week_start = ?", (week_start,))
-    total = c.fetchone()[0]
-    total = total if total else 0.0
+    total = c.fetchone()[0] or 0.0
+    await update.message.reply_text(f"💰 <b>Tesoretto attuale:</b> {total:.2f}€", parse_mode=ParseMode.HTML)
 
-    await update.message.reply_text(f"💰 <b>Tesoretto attuale:</b> {total:.2f}€", parse_mode="HTML")
-
-
-from telegram.constants import ParseMode
-from telegram.constants import ParseMode
-
-async def vincitore(update: Update, context: CallbackContext):
-    """
-    Calcola risultati e bilanci del giorno (o di ieri con 'yesterday').
-    - Recupera le previsioni della data target.
-    - Applica regole di premi/penalità (parte fissa + parte variabile).
-    - Gestisce il caso 'perfect guesser' con premi speciali e penalità fisse agli ultimi 3.
-    - Aggiorna il tesoretto (inattivi -10€) e lo assegna il venerdì.
-    - Salva un messaggio 'risultato' in winners per evitare ricalcoli/duplicati.
-
-    NOTE FIX: nel ramo perfect guesser le penalità fisse agli ultimi 3 sono mantenute NEGATIVE
-    e sommate al saldo (balance + numero_negativo) così da sottrarre correttamente.
-    """
+async def vincitore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(ITALY_TZ)
-    date_offset = -1 if context.args and context.args[0] == "yesterday" else 0
+    date_offset = -1 if (context.args and context.args[0] == "yesterday") else 0
     target_date = (now + timedelta(days=date_offset)).strftime("%Y-%m-%d")
     date_obj = datetime.strptime(target_date, "%Y-%m-%d")
-    week_start = (date_obj - timedelta(days=date_obj.weekday())).strftime("%Y-%m-%d")
 
-    # Blocco di sicurezza: non calcolare oggi prima della chiusura del mercato
+    # non calcolare oggi prima della chiusura
     if date_offset == 0 and now.time() < MARKET_CLOSE_TIME:
-        await update.message.reply_text("⏳ Il mercato è ancora aperto! Puoi controllare il vincitore dopo le 22:10.")
+        await update.message.reply_text("⏳ Il mercato è ancora aperto! Prova dopo le 22:10.")
         return
 
-    # Giorno festivo/chiuso: nessun calcolo
     if target_date in CHIUSURE_MERCATO:
-        await update.message.reply_text(f"❌ Il mercato era chiuso il {target_date}. Nessuna vincita calcolata.")
+        await update.message.reply_text(f"❌ Il mercato era chiuso il {target_date}.")
         return
 
-    # Evita ricalcoli se abbiamo già salvato l'esito
+    # evita ricalcoli
     c.execute("SELECT result FROM winners WHERE date = ?", (target_date,))
-    existing_result = c.fetchone()
-    if existing_result:
-        await update.message.reply_text(existing_result[0], parse_mode="HTML")
+    row = c.fetchone()
+    if row:
+        await update.message.reply_text(row[0], parse_mode=ParseMode.HTML)
         return
 
-    # Carica previsioni del giorno target
+    # previsioni del giorno
     c.execute("SELECT user_id, username, prediction FROM predictions WHERE date = ?", (target_date,))
     predictions = c.fetchall()
     if not predictions:
-        await update.message.reply_text(f"Nessuna previsione registrata per il {target_date}.")
+        await update.message.reply_text(f"Nessuna previsione per il {target_date}.")
         return
 
-    # Variazione % GME (oggi) usata come riferimento per la data target
-    closing_percentage = get_gme_closing_percentage()
+    # ottieni variazione %
+    closing_percentage = await asyncio.to_thread(get_gme_closing_percentage)
     if closing_percentage is None:
-        await update.message.reply_text("⚠️ La variazione percentuale di GME non è ancora disponibile. Riprova più tardi.")
+        await update.message.reply_text("⚠️ Dato GME non disponibile, riprova più tardi.")
         return
 
-    # Costruisci lista giocatori: (uid, uname, pred, diff_assoluta)
+    # players: (uid, uname, pred, diff)
     players = [(uid, uname, pred, round(abs(pred - closing_percentage), 2)) for uid, uname, pred in predictions]
-    players.sort(key=lambda x: x[3])  # crescente per differenza → i migliori all'inizio
+    players.sort(key=lambda x: x[3])
     num_players = len(players)
 
-    # Penalità -10€ per gli inattivi oggi + accumulo nel tesoretto settimanale
+    # penalità -10€ per chi NON ha scommesso oggi + accumulo tesoretto
     c.execute("SELECT user_id, username FROM balances")
-    all_users = dict(c.fetchall())  # {user_id: username}
+    all_users = dict(c.fetchall())
     bettors_today = {p[0] for p in players}
     non_bettors = {uid: uname for uid, uname in all_users.items() if uid not in bettors_today}
+
+    date_for_week = date_obj
+    week_start = (date_for_week - timedelta(days=date_for_week.weekday())).strftime("%Y-%m-%d")
 
     penalty_total = 10 * len(non_bettors)
     for uid in non_bettors:
         c.execute("UPDATE balances SET balance = ROUND(balance - 10, 2) WHERE user_id = ?", (uid,))
-    # Accumula nel tesoretto della settimana corrente
     c.execute("""
         INSERT INTO weekly_pot (week_start, amount)
         VALUES (?, ?)
         ON CONFLICT(week_start) DO UPDATE SET amount = ROUND(amount + ?, 2)
     """, (week_start, penalty_total, penalty_total))
 
-    # Leggi tesoretto attuale per messaggistica/bonus del venerdì
     c.execute("SELECT amount FROM weekly_pot WHERE week_start = ?", (week_start,))
     row = c.fetchone()
-    tesoretto = round(row[0], 2) if row else 0.0
+    tesoretto_val = round(row[0], 2) if row else 0.0
 
-    # Caso "perfect guesser": almeno un giocatore con diff == 0.00
-    perfect_guesser = next((p for p in players if p[3] == 0.0), None)
-
-    if perfect_guesser:
+    # perfect guesser?
+    perfect = next((p for p in players if p[3] == 0.0), None)
+    if perfect:
         middle = num_players // 2
         variable_pool = 0.0
-        losers_info = []  # [(loser_id, loser_uname, loss_variabile_pos)]
-        # Parte variabile: i top vincono la differenza * 5 rispetto agli opposti in fondo
+        losers_info = []
+
         for i in range(middle):
             diff_top = players[i][3]
             diff_bottom = players[-(i + 1)][3]
-            loss = abs(round((diff_bottom - diff_top) * 5, 2))  # positivo
+            loss = abs(round((diff_bottom - diff_top) * 5, 2))
             variable_pool += loss
             losers_info.append((players[-(i + 1)][0], players[-(i + 1)][1], loss))
 
-        # 🔧 FIX PENALE FISSE: manteniamo i valori NEGATIVI e NON invertiamo il segno
-        # Ordine esplicito: ultimi 3 della classifica (indici -1, -2, -3)
         fixed_penalties = [(-1, -150), (-2, -100), (-3, -50)]
-        fixed_losses = []  # [(uid, uname, penalty_negativa)]
+        fixed_losses = []
         for idx, penalty in fixed_penalties:
             uid, uname, *_ = players[idx]
-            fixed_losses.append((uid, uname, penalty))  # penalty è già NEGATIVA
+            fixed_losses.append((uid, uname, penalty))  # penalty NEGATIVA
 
-        # Premio del perfect guesser: 300€ + tutta la parte variabile accumulata
-        pg_id, pg_uname, _, _ = perfect_guesser
+        pg_id, pg_uname, _, _ = perfect
         total_prize = round(300 + variable_pool, 2)
         bonus_tesoretto = 0.0
 
-        # Venerdì: assegna anche il tesoretto (se > 0 e giorno non festivo)
-        if date_obj.weekday() == 4 and target_date not in CHIUSURE_MERCATO and tesoretto > 0:
-            bonus_tesoretto = tesoretto
-            total_prize = round(total_prize + tesoretto, 2)
-            c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2) WHERE user_id = ?", (tesoretto, pg_id))
+        if date_obj.weekday() == 4 and target_date not in CHIUSURE_MERCATO and tesoretto_val > 0:
+            bonus_tesoretto = tesoretto_val
+            total_prize = round(total_prize + tesoretto_val, 2)
+            c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2) WHERE user_id = ?", (tesoretto_val, pg_id))
             c.execute("DELETE FROM weekly_pot WHERE week_start = ?", (week_start,))
 
-        # Accredita il premio al perfect guesser
-        c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (pg_uname, pg_id))
+        # accredita PG
         c.execute("""
             INSERT INTO balances (user_id, username, balance)
             VALUES (?, ?, ?)
@@ -508,9 +427,8 @@ async def vincitore(update: Update, context: CallbackContext):
                 username = excluded.username
         """, (pg_id, pg_uname, total_prize, total_prize))
 
-        # Addebita le perdite variabili ai corrispettivi "ultimi"
+        # addebita parte variabile ai peggiori
         for loser_id, loser_uname, loss in losers_info:
-            c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (loser_uname, loser_id))
             c.execute("""
                 INSERT INTO balances (user_id, username, balance)
                 VALUES (?, ?, ?)
@@ -519,9 +437,8 @@ async def vincitore(update: Update, context: CallbackContext):
                     username = excluded.username
             """, (loser_id, loser_uname, -loss, loss))
 
-        # 🧲 Applica le penalità fisse (NEGATIVE) agli ultimi 3 → balance + (negativo) = sottrazione ✅
+        # penalità fisse (negative)
         for uid, uname, fixed_penalty in fixed_losses:
-            c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (uname, uid))
             c.execute("""
                 INSERT INTO balances (user_id, username, balance)
                 VALUES (?, ?, ?)
@@ -532,11 +449,11 @@ async def vincitore(update: Update, context: CallbackContext):
 
         conn.commit()
 
-        # Messaggio di output dettagliato
+        # messaggio
         msg = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n"
-        msg += f"<i>Tesoretto attuale: {tesoretto}€</i>\n\n"
-        msg += f"🎯 <b>Perfetto!</b> @{pg_uname} ha indovinato esattamente la chiusura!\n"
-        msg += f"🏅 Guadagna: 300€ fissi + {round(variable_pool, 2)}€ (parte variabile)"
+        msg += f"<i>Tesoretto attuale: {tesoretto_val}€</i>\n\n"
+        msg += f"🎯 <b>Perfect guess!</b> @{pg_uname} ha indovinato esattamente.\n"
+        msg += f"🏅 Guadagna: 300€ + {round(variable_pool, 2)}€"
         if bonus_tesoretto > 0:
             msg += f" + {bonus_tesoretto}€ (tesoretto)"
         msg += f" = <b>{round(total_prize, 2)}€</b>\n\n"
@@ -546,13 +463,12 @@ async def vincitore(update: Update, context: CallbackContext):
             label = "🏆" if uid == pg_id else "•"
             msg += f"{label} @{uname}: {pred:.2f}% (Diff: {diff:.2f}%)\n"
 
-        msg += "\n<b>❌ Perdenti (parte variabile):</b>\n"
+        msg += "\n<b>❌ Perdenti (variabile):</b>\n"
         for _, uname, loss in losers_info:
             msg += f"• @{uname}: -{loss}€\n"
 
-        msg += "\n<b>💀 Penalità fisse assegnate:</b>\n"
+        msg += "\n<b>💀 Penalità fisse:</b>\n"
         for _, uname, fixed in fixed_losses:
-            # fixed è negativo: lo mostriamo così (es. -150€)
             msg += f"• @{uname}: {fixed}€\n"
 
         if non_bettors:
@@ -560,29 +476,22 @@ async def vincitore(update: Update, context: CallbackContext):
             for uname in non_bettors.values():
                 msg += f"• @{uname}\n"
 
-        if bonus_tesoretto > 0:
-            msg += f"\n💰 <b>Tesoretto settimanale:</b> @{pg_uname} riceve anche <b>{bonus_tesoretto}€</b> extra!"
-            msg += f"\n🏆 In totale si porta a casa: <b>{round(total_prize, 2)}€</b>"
-
         c.execute("INSERT INTO winners (date, result) VALUES (?, ?)", (target_date, msg))
         conn.commit()
-        await update.message.reply_text(msg, parse_mode="HTML")
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
         return
 
-    # --- Calcolo standard (nessun perfect guesser) ---
+    # ---- Calcolo standard ----
     rewards = {1: 150, 2: 100, 3: 50}
     penalties = {-1: -150, -2: -100, -3: -50}
     risk_multiplier = 5
 
-    # changes: uid → [username, fisso, variabile]
     changes = {uid: [uname, 0.0, 0.0] for uid, uname, _, _ in players}
 
-    # Premi ai primi 3 e penalità (negative) agli ultimi 3
     for i in range(3):
         changes[players[i][0]][1] += rewards[i + 1]
         changes[players[-(i + 1)][0]][1] += penalties[-(i + 1)]
 
-    # Parte variabile: top vs bottom
     for i in range(num_players // 2):
         top = players[i]
         bottom = players[-(i + 1)]
@@ -590,16 +499,13 @@ async def vincitore(update: Update, context: CallbackContext):
         changes[top[0]][2] += delta
         changes[bottom[0]][2] -= delta
 
-    # Se dispari, il giocatore centrale non guadagna né perde dalla parte variabile o fissa
     if num_players % 2 == 1:
         mid_uid = players[num_players // 2][0]
         changes[mid_uid][1] = 0.0
         changes[mid_uid][2] = 0.0
 
-    # Persisti i cambi saldo
     for uid, (uname, fisso, var) in changes.items():
         totale = round(fisso + var, 2)
-        c.execute("UPDATE balances SET username = ? WHERE user_id = ?", (uname, uid))
         c.execute("""
             INSERT INTO balances (user_id, username, balance)
             VALUES (?, ?, ?)
@@ -608,21 +514,20 @@ async def vincitore(update: Update, context: CallbackContext):
                 username = excluded.username
         """, (uid, uname, totale, totale))
 
-    # Tesoretto per messaggio/bonus del venerdì
+    # tesoretto (per messaggio/bonus)
     c.execute("SELECT week_start, amount FROM weekly_pot ORDER BY week_start DESC LIMIT 1")
-    tesoretto_row = c.fetchone()
-    tesoretto = tesoretto_row[1] if tesoretto_row else 0
-    tesoretto_week_start = tesoretto_row[0] if tesoretto_row else None
+    row = c.fetchone()
+    tesoretto_val = row[1] if row else 0
+    tesoretto_week_start = row[0] if row else None
 
     conn.commit()
 
-    # Messaggio di output (standard)
     msg = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n"
-    msg += f"<i>Tesoretto attuale: {tesoretto}€</i>\n\n"
+    msg += f"<i>Tesoretto attuale: {tesoretto_val}€</i>\n\n"
 
     sorted_results = sorted(
         changes.items(),
-        key=lambda item: -(item[1][1] + item[1][2])  # ordina per totale desc
+        key=lambda item: -(item[1][1] + item[1][2])
     )
     winner_uid, (winner_username, winner_fisso, winner_var) = sorted_results[0]
     winner_tot = round(winner_fisso + winner_var, 2)
@@ -643,128 +548,91 @@ async def vincitore(update: Update, context: CallbackContext):
         for uname in non_bettors.values():
             msg += f"• @{uname}\n"
 
-    # Bonus tesoretto al vincitore del venerdì (se week pot > 0)
-    if date_obj.weekday() == 4 and target_date not in CHIUSURE_MERCATO and tesoretto > 0:
-        c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2) WHERE user_id = ?", (tesoretto, winner_uid))
+    if date_obj.weekday() == 4 and target_date not in CHIUSURE_MERCATO and tesoretto_val > 0:
+        c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2) WHERE user_id = ?", (tesoretto_val, winner_uid))
         c.execute("DELETE FROM weekly_pot WHERE week_start = ?", (tesoretto_week_start,))
-        total_final = round(winner_tot + tesoretto, 2)
+        total_final = round(winner_tot + tesoretto_val, 2)
         msg += (
-            f"\n💰 Tesoretto settimanale: @{winner_username} riceve anche <b>{tesoretto}€</b> extra!\n"
+            f"\n💰 Tesoretto settimanale: @{winner_username} riceve anche <b>{tesoretto_val}€</b> extra!\n"
             f"🤑 Guadagno complessivo del giorno: <b>{total_final}€</b>\n"
         )
 
     c.execute("INSERT INTO winners (date, result) VALUES (?, ?)", (target_date, msg))
     conn.commit()
-    await update.message.reply_text(msg, parse_mode="HTML")
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
-
-async def istruzioni(update: Update, context: CallbackContext):
+async def istruzioni(update: Update, context: ContextTypes.DEFAULT_TYPE):
     messaggio = (
-        "Ogni giorno puoi scommettere sulla variazione percentuale del titolo <b>$GME</b>. "
-        "Il sistema assegna premi ai più precisi e penalità agli ultimi, oltre a una dinamica di punteggio variabile e accumulo settimanale.\n"
-        "\n"
+        "Ogni giorno puoi scommettere sulla variazione percentuale del titolo <b>$GME</b>.\n\n"
         "<b>🕒 Orari</b>\n"
-        "• Le scommesse sono aperte dalle 00:00 fino alle 15:30 (orario italiano)\n"
-        "• I risultati vengono calcolati dopo le 22:10\n"
-        "\n"
+        "• Scommesse: 00:00 → 15:30 (ora italiana)\n"
+        "• Risultati dopo le 22:10\n\n"
         "<b>💰 Punteggio</b>\n"
-        "• 1° classificato: +150€\n"
-        "• 2° classificato: +100€\n"
-        "• 3° classificato: +50€\n"
+        "• 1°: +150€ • 2°: +100€ • 3°: +50€\n"
         "• Ultimi 3: -50€, -100€, -150€\n"
-        "• Parte variabile: ogni utente scambia punti col suo “opposto” in classifica (differenza * 5)\n"
-        "\n"
+        "• Parte variabile: top vs bottom (differenza * 5)\n\n"
         "<b>🎯 Perfect guess</b>\n"
-        "• +300€ fissi\n"
-        "• Guadagna l’intera parte variabile dei perdenti della metà bassa\n"
-        "\n"
+        "• +300€ fissi + tutta la parte variabile dei perdenti\n\n"
         "<b>😴 Penalità giornaliera</b>\n"
-        "• Chi è in classifica ma non scommette perde 10€\n"
-        "• Questa somma va nel <b>tesoretto settimanale</b>\n"
-        "\n"
-        "<b>💎 Tesoretto settimanale</b>\n"
-        "• Accumula 10€ per ogni utente inattivo\n"
-        "• Viene assegnato al vincitore del venerdì (se il mercato è aperto)\n"
-        "• Se il venerdì è chiuso, resta per la settimana successiva\n"
-        "\n"
-        "<b>🔧 Comandi principali</b>\n"
-        "<code>/bet 2.5</code> – Invia la tua previsione giornaliera\n"
-        "<code>/vincitore</code> – Calcola i risultati (disponibile dopo le 22:10)\n"
-        "<code>/vincitore yesterday</code> – Mostra i risultati di ieri\n"
-        "<code>/scommesse</code> – Mostra le previsioni attive di oggi\n"
-        "<code>/bannati</code> – Elenco utenti bannati\n"
-        "<code>/classifica</code> – Classifica aggiornata\n"
-        "<code>/bilancio</code> – Mostra il tuo saldo\n"
-        "<code>/tesoretto</code> — Mostra il valore attuale del tesoretto settimanale\n"
-        "<code>/id</code> – Registra il tuo ID Telegram\n"
-        "<code>/istruzioni</code> – Mostra questo messaggio\n"
-        "\n"
-        "<b>👮 Solo admin</b>\n"
-        "<code>/ban username giorni</code> – Bannare un utente\n"
-        "<code>/unban username</code> – Sbloccare un utente\n"
-        "Buona fortuna e che vinca il più preciso! 🧠💸"
+        "• Chi non scommette perde 10€ → nel <b>tesoretto settimanale</b>\n\n"
+        "<b>💎 Tesoretto</b>\n"
+        "• Assegnato al vincitore del venerdì (se mercato aperto)\n\n"
+        "<b>🔧 Comandi</b>\n"
+        "<code>/bet 2.5</code> • <code>/vincitore</code> • <code>/vincitore yesterday</code>\n"
+        "<code>/scommesse</code> • <code>/classifica</code> • <code>/bilancio</code>\n"
+        "<code>/tesoretto</code> • <code>/id</code> • <code>/bannati</code>\n"
+        "<code>/ban username giorni</code> • <code>/unban username</code>\n"
     )
-    await update.message.reply_text(messaggio, parse_mode="HTML")
+    await update.message.reply_text(messaggio, parse_mode=ParseMode.HTML)
 
-async def registra_id(update: Update, context: CallbackContext):
+async def registra_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    user_id = user.id
-    username = user.username or "Sconosciuto"
-
-    # Messaggio privato all'utente
     await update.message.reply_text("✅ Ok! ID registrato.")
-
-    # Messaggio nella chat bot admin
     try:
         await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
-            text=f"🆔 ID registrato: @{username} → {user_id}"
+            text=f"🆔 ID registrato: @{(user.username or 'Sconosciuto')} → {user.id}"
         )
     except Exception as e:
-        logging.error(f"Errore nell'invio dell'ID: {e}")
+        logging.error(f"Errore invio ID admin: {e}")
 
-
-async def ban(update: Update, context: CallbackContext):
-    # Solo l'admin può eseguire il comando
+async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_CHAT_ID:
-        await update.message.reply_text("⛔ Solo il Re dei Bot può bannare gli utenti.")
+        await update.message.reply_text("⛔ Solo l'admin può bannare.")
         return
 
     if len(context.args) != 2:
-        await update.message.reply_text("❗ Usa il comando così: /ban username giorni")
+        await update.message.reply_text("❗ Usa: /ban username giorni")
         return
 
     username = context.args[0].lstrip("@")
     try:
         giorni = int(context.args[1])
     except ValueError:
-        await update.message.reply_text("❗ Il numero di giorni deve essere un numero intero.")
+        await update.message.reply_text("❗ Il numero di giorni deve essere intero.")
         return
 
     c.execute("SELECT user_id FROM balances WHERE username = ?", (username,))
-    result = c.fetchone()
-    if not result:
-        await update.message.reply_text(f"⚠️ Nessun utente trovato con username @{username}.")
+    res = c.fetchone()
+    if not res:
+        await update.message.reply_text(f"⚠️ Nessun utente @{username}.")
         return
 
-    user_id = result[0]
+    user_id = res[0]
     ban_until = (datetime.now(ITALY_TZ).date() + timedelta(days=giorni)).strftime("%Y-%m-%d")
     c.execute("INSERT OR REPLACE INTO bans (user_id, ban_until) VALUES (?, ?)", (user_id, ban_until))
     conn.commit()
+    await update.message.reply_text(f"✅ @{username} bannato fino al {ban_until}.")
 
-    await update.message.reply_text(f"✅ L'utente @{username} è stato bannato fino al {ban_until}.")
-
-
-
-async def unban(update: Update, context: CallbackContext):
+async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != ADMIN_CHAT_ID:
-        await update.message.reply_text("❌ Non hai i permessi per usare questo comando.")
+        await update.message.reply_text("❌ Non hai i permessi.")
         return
 
     try:
         username = context.args[0].lstrip("@")
     except IndexError:
-        await update.message.reply_text("⚠️ Usa il comando così: /unban username")
+        await update.message.reply_text("⚠️ Usa: /unban username")
         return
 
     c.execute("SELECT user_id FROM balances WHERE username = ?", (username,))
@@ -772,16 +640,14 @@ async def unban(update: Update, context: CallbackContext):
     if not res:
         await update.message.reply_text("❌ Utente non trovato.")
         return
+
     user_id = res[0]
     c.execute("DELETE FROM bans WHERE user_id = ?", (user_id,))
+    conn.commit()
+    await update.message.reply_text(f"✅ Ban rimosso per @{username}.")
 
-
-    await update.message.reply_text(f"✅ Il ban per @{username} è stato rimosso.")
-    
-async def bannati(update: Update, context: CallbackContext):
+async def bannati(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = datetime.now(ITALY_TZ).date()
-
-    # Recupera tutti i ban ancora attivi
     c.execute("SELECT user_id, ban_until FROM bans")
     results = c.fetchall()
 
@@ -795,8 +661,8 @@ async def bannati(update: Update, context: CallbackContext):
         ban_date = datetime.strptime(ban_until, "%Y-%m-%d").date()
         if today <= ban_date:
             c.execute("SELECT username FROM balances WHERE user_id = ?", (user_id,))
-            user_data = c.fetchone()
-            username = user_data[0] if user_data else f"ID {user_id}"
+            r = c.fetchone()
+            username = r[0] if r else f"ID {user_id}"
             giorni_rimanenti = (ban_date - today).days
             message += f"• @{username} — fino al {ban_date.strftime('%d/%m/%Y')} ({giorni_rimanenti} giorni rimanenti)\n"
             found = True
@@ -804,274 +670,156 @@ async def bannati(update: Update, context: CallbackContext):
     if not found:
         message = "✅ Nessun utente è attualmente bannato."
 
-    await update.message.reply_text(message, parse_mode="HTML")
+    await update.message.reply_text(message, parse_mode=ParseMode.HTML)
 
-
-
-async def admin(update: Update, context: CallbackContext):
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         chat = update.effective_chat
         admins = await context.bot.get_chat_administrators(chat.id)
-
         mentions = []
-        for admin in admins:
-            user = admin.user
+        for adm in admins:
+            user = adm.user
             if user.username:
                 mentions.append(f"@{user.username}")
             else:
                 name = user.first_name or "admin"
                 mentions.append(f"<i>{name}</i>")
-
         message = "🔧 <b>Amministratori della chat:</b>\n" + "\n".join(mentions)
-        await update.message.reply_text(message, parse_mode="HTML")
-
+        await update.message.reply_text(message, parse_mode=ParseMode.HTML)
     except Exception as e:
-        logging.error(f"Errore nel recupero degli admin: {e}")
+        logging.error(f"Errore admin list: {e}")
         await update.message.reply_text("❌ Errore nel recupero degli admin.")
 
-
-async def testVincitore(update: Update, context: CallbackContext):
-    """
-    Funzione per testare il calcolo del vincitore con premi e penalità corretti.
-    La logica qui segue esattamente quella di /vincitore, utilizzando dati casuali.
-    """
-    # 1️⃣ Generazione dei dati casuali
-    closing_percentage = round(random.uniform(-10, 10), 2)  # Simula un valore di chiusura casuale
-    players = [f"Player{i}" for i in range(1, 17)]  # 16 giocatori
-    # Genera previsioni casuali per ogni giocatore
-    predictions = [(player, round(random.uniform(-10, 10), 2)) for player in players]
-
-    # 2️⃣ Calcolo della differenza assoluta e ordinamento delle previsioni
-    predictions = [
-        (username, prediction, round(abs(prediction - closing_percentage), 2))
-        for username, prediction in predictions
-    ]
-    predictions.sort(key=lambda x: x[2])  # Ordina per differenza crescente
+async def testVincitore(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    closing_percentage = round(random.uniform(-10, 10), 2)
+    players = [f"Player{i}" for i in range(1, 17)]
+    predictions = [(p, round(random.uniform(-10, 10), 2)) for p in players]
+    predictions = [(u, pr, round(abs(pr - closing_percentage), 2)) for u, pr in predictions]
+    predictions.sort(key=lambda x: x[2])
     num_players = len(predictions)
 
-    # 3️⃣ Definizione di premi, penalità fisse e moltiplicatore per la parte variabile
-    rewards = {1: 150, 2: 100, 3: 50}      # Premi per i primi 3
-    penalties = {-1: -150, -2: -100, -3: -50}  # Penalità per gli ultimi 3
+    rewards = {1: 150, 2: 100, 3: 50}
+    penalties = {-1: -150, -2: -100, -3: -50}
     risk_multiplier = 5
 
-    # 4️⃣ Inizializzazione della struttura dei risultati: ogni giocatore parte con [fisso, variabile] = [0, 0]
-    balance_changes = {username: [0, 0] for username, _, _ in predictions}
-
-    # 5️⃣ Assegnazione dei premi e delle penalità fisse
+    balance_changes = {u: [0, 0] for u, _, _ in predictions}
     for i in range(3):
-        # Premi per i primi 3 (migliore accuratezza)
-        username_top = predictions[i][0]
-        balance_changes[username_top][0] += rewards[i + 1]
+        balance_changes[predictions[i][0]][0] += rewards[i + 1]
+        balance_changes[predictions[-(i + 1)][0]][0] += penalties[-(i + 1)]
 
-        # Penalità per gli ultimi 3 (peggiore accuratezza)
-        username_bottom = predictions[-(i + 1)][0]
-        balance_changes[username_bottom][0] += penalties[-(i + 1)]
-
-    # 6️⃣ Assegnazione della parte variabile abbinando il giocatore in testa a quello in fondo
     middle_index = num_players // 2
     for i in range(middle_index):
-        username_top, prediction_top, diff_top = predictions[i]
-        username_bottom, prediction_bottom, diff_bottom = predictions[-(i + 1)]
+        _, _, diff_top = predictions[i]
+        _, _, diff_bottom = predictions[-(i + 1)]
         variable_bonus = (diff_bottom - diff_top) * risk_multiplier
-        balance_changes[username_top][1] += variable_bonus
-        balance_changes[username_bottom][1] -= variable_bonus
+        balance_changes[predictions[i][0]][1] += variable_bonus
+        balance_changes[predictions[-(i + 1)][0]][1] -= variable_bonus
 
-    # 7️⃣ Se il numero di giocatori è dispari, il giocatore centrale viene resettato a [0, 0]
     if num_players % 2 == 1:
-        mid_username = predictions[middle_index][0]
-        balance_changes[mid_username] = [0, 0]
+        mid_u = predictions[middle_index][0]
+        balance_changes[mid_u] = [0, 0]
 
-    # 8️⃣ Creazione della classifica finale ordinando per punteggio totale (fisso + variabile)
     sorted_results = sorted(balance_changes.items(), key=lambda x: -(x[1][0] + x[1][1]))
-
-    # 9️⃣ Costruzione del messaggio di output simulando la classifica
     message = f"\n📈 Simulazione Test - Variazione GME: {closing_percentage}%\n\n"
-    for i, (username, changes) in enumerate(sorted_results):
-        # Recupera la previsione originale
-        prediction = next(pred for user, pred, _ in predictions if user == username)
+    for i, (user, changes) in enumerate(sorted_results):
+        prediction = next(pr for u, pr, _ in predictions if u == user)
         diff = round(abs(prediction - closing_percentage), 2)
         rank = i + 1
         fixed_part, variable_part = changes
-        total_score = fixed_part + variable_part
-
+        total = round(fixed_part + variable_part, 2)
         if rank <= 3:
-            message += f"🏆 {rank}° posto: @{username} ha previsto {prediction}% (📏 Diff: {diff}%), Fisso: {fixed_part}€, Variabile: {round(variable_part, 2)}€, Totale: {round(total_score, 2)}€\n"
+            message += f"🏆 {rank}°: @{user} → {prediction}% (Diff {diff}%) Fisso {fixed_part}€, Var {variable_part:.2f}€, Tot {total}€\n"
         elif rank > num_players - 3:
-            message += f"💀 {rank}° posto: @{username} ha previsto {prediction}% (📏 Diff: {diff}%), Fisso: {fixed_part}€, Variabile: {round(variable_part, 2)}€, Totale: {round(total_score, 2)}€\n"
+            message += f"💀 {rank}°: @{user} → {prediction}% (Diff {diff}%) Fisso {fixed_part}€, Var {variable_part:.2f}€, Tot {total}€\n"
         else:
-            message += f"⚖️ {rank}° posto: @{username} ha previsto {prediction}% (📏 Diff: {diff}%), Fisso: {fixed_part}€, Variabile: {round(variable_part, 2)}€, Totale: {round(total_score, 2)}€\n"
-
-    # 🔟 Invia il messaggio di output
+            message += f"⚖️ {rank}°: @{user} → {prediction}% (Diff {diff}%) Fisso {fixed_part}€, Var {variable_part:.2f}€, Tot {total}€\n"
     await update.message.reply_text(message)
 
+async def testapi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("API funzionante!")
 
+# ---------------------- REMINDER via JOBQUEUE ----------------------
+REMINDER_OFFSETS = [
+    (180, "Mancano 3 ore"),
+    (120, "Mancano 2 ore"),
+    (60,  "Manca 1 ora"),
+    (10,  "Mancano 10 minuti"),
+]
 
-def testapi(update, context):
-    update.message.reply_text("API funzionante!")
+async def reminder_tick(context: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now(ITALY_TZ)
 
-async def betTEST(update: Update, context: CallbackContext):
-    # Prova a estrarre il valore della scommessa (verifica la sintassi, ma non lo mostra)
-    try:
-        _ = float(context.args[0])
-    except (IndexError, ValueError):
-        await update.message.reply_text("❗ Usa il comando così: /betTEST 1.4")
+    if now.weekday() in [5, 6]:
         return
 
-    # Costruisci il messaggio di conferma senza mostrare il valore
-    username = update.message.from_user.username
-    today_date = datetime.now(ITALY_TZ).strftime("%Y-%m-%d")
-    confirmation_message = (
-        f"✅ <b>Scommessa registrata!</b>\n"
-        f"@{username} ha scommesso per la giornata odierna ({today_date})."
-    )
+    cutoff = now.replace(hour=CUTOFF_TIME.hour, minute=CUTOFF_TIME.minute, second=0, microsecond=0)
+    if now > cutoff:
+        tomorrow = now + timedelta(days=1)
+        cutoff = tomorrow.replace(hour=CUTOFF_TIME.hour, minute=CUTOFF_TIME.minute, second=0, microsecond=0)
 
-    # Prova a eliminare il messaggio originale per nascondere il comando
-    try:
-        await update.message.delete()
-    except Exception as e:
-        logging.error(f"Errore nel cancellare il messaggio: {e}")
+    target_date = cutoff.strftime("%Y-%m-%d")
+    if target_date in CHIUSURE_MERCATO:
+        return
 
-    # Se il messaggio appartiene a un thread, ottieni l'id del thread
-    thread_id = getattr(update.message, "message_thread_id", None)
+    bot_state = context.application.bot_data
+    sent_reminders = bot_state.setdefault("sent_reminders", {})
+    already = sent_reminders.setdefault(target_date, set())
 
-    # Invia il messaggio di conferma nella stessa chat (e thread se presente)
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=confirmation_message,
-        parse_mode="HTML",
-        message_thread_id=thread_id  # Questo lo manda nel thread corretto se esiste
-    )
-
-# Reminder scheduler: invia messaggi di reminder alla chat specificata
-async def reminder_scheduler(chat_id: int):
-    """
-    Invia reminder alla chat (chat_id) a 3 ore, 2 ore, 1 ora e 10 minuti 
-    prima del cutoff delle scommesse.
-    Non invia reminder se oggi è sabato o domenica oppure se la data target è in CHIUSURE_MERCATO.
-    Per evitare duplicati, tiene traccia degli offset per cui il reminder è già stato inviato.
-    """
-    # Dizionario per tracciare gli offset già inviati per ciascuna data target
-    sent_reminders = {}
-
-    # Definisci gli offset in minuti e i relativi messaggi
-    reminder_offsets = [
-        (180, "Mancano 3 ore"),
-        (120, "Mancano 2 ore"),
-        (60,  "Manca 1 ora"),
-        (10,  "Mancano 10 minuti")
-    ]
-
-    while True:
-        now = datetime.now(ITALY_TZ)
-
-        # Se oggi è sabato (weekday() == 5) o domenica (weekday() == 6), salta i reminder
-        if now.weekday() in [5, 6]:
-            await asyncio.sleep(60)
+    for offset, label in REMINDER_OFFSETS:
+        if offset in already:
             continue
+        reminder_time = cutoff - timedelta(minutes=offset)
+        if reminder_time <= now < reminder_time + timedelta(minutes=1):
+            try:
+                c.execute("SELECT COUNT(*) FROM predictions WHERE date = ?", (target_date,))
+                count = c.fetchone()[0]
+            except Exception as e:
+                logging.error(f"Errore DB nel reminder: {e}")
+                count = "non disponibile"
 
-        # Calcola il cutoff per le scommesse per oggi usando CUTOFF_TIME
-        cutoff = now.replace(hour=CUTOFF_TIME.hour, minute=CUTOFF_TIME.minute, second=0, microsecond=0)
-        # Se siamo già oltre il cutoff, calcola per il giorno successivo
-        if now > cutoff:
-            tomorrow = now + timedelta(days=1)
-            cutoff = tomorrow.replace(hour=CUTOFF_TIME.hour, minute=CUTOFF_TIME.minute, second=0, microsecond=0)
-        target_date = cutoff.strftime("%Y-%m-%d")
+            cutoff_str = f"{CUTOFF_TIME.hour:02d}:{CUTOFF_TIME.minute:02d}"
+            message = (
+                f"🔔 {label}: il termine delle scommesse è alle {cutoff_str}.\n"
+                f"Finora {count} scommesse per il {target_date}.\n"
+                f"Usa /scommesse per scoprire chi non è una fighetta!"
+            )
+            try:
+                await context.bot.send_message(chat_id=GROUP_TOPIC_CHAT_ID, text=message, parse_mode=ParseMode.HTML)
+            except Exception as e:
+                logging.error(f"Errore invio reminder: {e}")
+            already.add(offset)
 
-        # Se il mercato è chiuso per quella data, salta i reminder
-        if target_date in CHIUSURE_MERCATO:
-            await asyncio.sleep(60)
-            continue
-
-        # Inizializza sent_reminders per target_date se non esiste
-        if target_date not in sent_reminders:
-            sent_reminders[target_date] = set()
-
-        for offset, text in reminder_offsets:
-            if offset in sent_reminders[target_date]:
-                continue  # Reminder già inviato per questo offset e data
-            reminder_time = cutoff - timedelta(minutes=offset)
-            # Se siamo entro 1 minuto dalla finestra del reminder
-            if reminder_time <= now < reminder_time + timedelta(minutes=1):
-                try:
-                    c.execute("SELECT COUNT(*) FROM predictions WHERE date = ?", (target_date,))
-                    count = c.fetchone()[0]
-                except Exception as e:
-                    logging.error(f"Errore nell'interrogazione del database per i reminder: {e}")
-                    count = "non disponibile"
-                cutoff_str = f"{CUTOFF_TIME.hour:02d}:{CUTOFF_TIME.minute:02d}"
-                message = (f"🔔 {text}: il termine delle scommesse è fissato per le {cutoff_str}.\n"
-                           f"Finora sono state piazzate solo {count} scommesse per il {target_date}.\n"
-                           f"Utilizza il comando /scommesse per scoprire chi non è una fighetta!")
-                try:
-                    await app_instance.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
-                except Exception as e:
-                    logging.error(f"Errore nell'invio del reminder: {e}")
-                sent_reminders[target_date].add(offset)
-        await asyncio.sleep(30)
-
-
-
-# Funzione per avviare il bot
-
-
-
-app_flask = Flask(__name__)
-
-@app_flask.route("/")
-def home():
-    return "✅ Bot GME attivo"
-
-def run_flask():
-    port = int(os.getenv("PORT", 5000))
-    try:
-        app_flask.run(host="0.0.0.0", port=port)
-    except Exception as e:
-        logging.error(f"Errore Flask: {e}")
-
-# Main function
-        
-# Main async
+# ---------------------- BOOTSTRAP ----------------------
 def main():
-    global app_instance
-    app_instance = Application.builder().token(TOKEN).build()
+    application = Application.builder().token(TOKEN).build()
 
-    # Aggiunta handler comandi
-    app_instance.add_handler(CommandHandler("bet", bet))
-    app_instance.add_handler(CommandHandler("vincitore", vincitore))
-    app_instance.add_handler(CommandHandler("testapi", testapi))
-    app_instance.add_handler(CommandHandler("betTEST", betTEST))
-    app_instance.add_handler(CommandHandler("classifica", classifica))
-    app_instance.add_handler(CommandHandler("scommesse", scommesse))
-    app_instance.add_handler(CommandHandler("bilancio", bilancio))
-    app_instance.add_handler(CommandHandler("admin", admin))
-    app_instance.add_handler(CommandHandler("testVincitore", testVincitore))
-    app_instance.add_handler(CommandHandler("istruzioni", istruzioni))
-    app_instance.add_handler(CommandHandler("id", registra_id))
-    app_instance.add_handler(CommandHandler("ban", ban))
-    app_instance.add_handler(CommandHandler("unban", unban))
-    app_instance.add_handler(CommandHandler("tesoretto", tesoretto))
-    app_instance.add_handler(CommandHandler("bannati", bannati))
+    # Handlers
+    application.add_handler(CommandHandler("bet", bet))
+    application.add_handler(CommandHandler("vincitore", vincitore))
+    application.add_handler(CommandHandler("scommesse", scommesse))
+    application.add_handler(CommandHandler("classifica", classifica))
+    application.add_handler(CommandHandler("bilancio", bilancio))
+    application.add_handler(CommandHandler("istruzioni", istruzioni))
+    application.add_handler(CommandHandler("id", registra_id))
+    application.add_handler(CommandHandler("ban", ban))
+    application.add_handler(CommandHandler("unban", unban))
+    application.add_handler(CommandHandler("bannati", bannati))
+    application.add_handler(CommandHandler("admin", admin))
+    application.add_handler(CommandHandler("testVincitore", testVincitore))
+    application.add_handler(CommandHandler("testapi", testapi))
+    application.add_handler(CommandHandler("chatid", chatid))
+    application.add_handler(CommandHandler("tesoretto", tesoretto))
+
+    # Scheduler ufficiale PTB: un “tick” ogni 30s
+    application.job_queue.run_repeating(reminder_tick, interval=30, first=0)
 
     logging.info("Bot avviato con successo!")
-
-    # Avvia reminder in background solo se è una coroutine valida
-    # Avvia reminder in background se coroutine
-    try:
-        task = reminder_scheduler(GROUP_TOPIC_CHAT_ID)
-        if asyncio.iscoroutine(task):
-            asyncio.create_task(task)
-    except Exception as e:
-        logging.error(f"Errore nell'avvio del reminder scheduler: {e}")
-
-    # 🚀 Questo tiene vivo il processo!
-    app_instance.run_polling(
+    application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
         close_loop=False
     )
-    
+
 if __name__ == "__main__":
-    threading.Thread(target=run_flask).start()
+    start_keep_alive_server()  # opzionale se tieni il servizio come Web su Render
     main()
-
-
