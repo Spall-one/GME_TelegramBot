@@ -37,6 +37,8 @@ Comandi aggiuntivi:
 /testVincitore: Funzione di test per simulare il calcolo dei vincitori con dati casuali.
 Keep-Alive:
 Il bot integra un piccolo server Flask per fornire un endpoint HTTP, utile per configurare servizi di ping (es. UptimeRobot) e mantenere attivo il servizio su piattaforme cloud.
+Un task asincrono effettua automaticamente richieste GET all'URL indicato da `KEEPALIVE_URL` (o
+da `RENDER_EXTERNAL_URL`) ogni pochi minuti per impedire lo standby del servizio.
 
 Prerequisites
 Python 3.10+ (o una versione compatibile)
@@ -64,7 +66,11 @@ Copia
 TELEGRAM_BOT_TOKEN=il_tuo_token_telegram
 FINNHUB_API_KEY=la_tua_chiave_finnhub
 PORT=8080
+KEEPALIVE_URL=https://<nome-servizio>.onrender.com/
 Il bot utilizza il pacchetto python-dotenv per caricare automaticamente queste variabili.
+
+Se `KEEPALIVE_URL` non è impostata, il bot proverà a usare `RENDER_EXTERNAL_URL` (variabile
+impostata automaticamente da Render) per eseguire i ping periodici.
 
 Usage
 Avvia il bot con il comando:
@@ -96,4 +102,12 @@ Aggiungi "yesterday" per visualizzare i risultati del giorno precedente.
 
 /testVincitore
 Funzione di test per simulare il calcolo dei vincitori con dati casuali.
+
+Deployment
+Su Render configura il servizio come web service, esponendo la porta specificata dalla
+variabile `PORT` (di default 8080). Imposta inoltre la variabile d'ambiente `KEEPALIVE_URL`
+al tuo URL pubblico, ad esempio `https://<nome-servizio>.onrender.com/`. In alternativa puoi
+affidarti alla variabile `RENDER_EXTERNAL_URL` già fornita da Render, ma impostare
+esplicitamente `KEEPALIVE_URL` garantisce che il task di ping utilizzi l'indirizzo corretto
+per mantenere l'app attiva.
 
