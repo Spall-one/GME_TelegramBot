@@ -56,6 +56,22 @@ def start_keep_alive_server():
     t.start()
     logging.info(f"Keep-alive server started on port {port}")
 
+
+async def keep_alive_ping():
+    url = os.getenv("KEEPALIVE_URL") or os.getenv("RENDER_EXTERNAL_URL")
+    if not url:
+        logging.info("Keep-alive ping disabilitato: nessuna URL configurata.")
+        return
+
+    logging.info(f"Keep-alive ping attivo verso {url}")
+    while True:
+        try:
+            await asyncio.to_thread(requests.get, url, timeout=5)
+            logging.debug("Keep-alive ping inviato con successo")
+        except Exception as exc:
+            logging.warning(f"Errore durante il keep-alive ping: {exc}")
+        await asyncio.sleep(180)
+
 # ---------------------- DATABASE ----------------------
 DB_FILE = "predictions.db"
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -757,6 +773,7 @@ async def reminder_scheduler(application: Application):
 
 async def _post_init(application: Application):
     """Eseguito dopo l'inizializzazione: attiva JobQueue se presente, altrimenti fallback."""
+    asyncio.create_task(keep_alive_ping())
     jq = getattr(application, "job_queue", None)
     if jq is None:
         logging.info("JobQueue non disponibile: uso il fallback asyncio.")
