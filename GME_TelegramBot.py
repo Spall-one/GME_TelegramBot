@@ -49,6 +49,10 @@ app = Flask(__name__)
 def home():
     return {"status": "up", "timestamp": datetime.now().timestamp()}, 200
 
+@app.route("/health")
+def health():
+    return "ok", 200
+
 def start_keep_alive_server():
     port = int(os.environ.get("PORT", "8080"))  # su Render è 8080
     import threading
