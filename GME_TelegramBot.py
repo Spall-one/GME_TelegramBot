@@ -543,15 +543,15 @@ async def istruzioni(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /bet 0        → prevedi 0,00%\n"
 
         "Regole:\n"
-        "• Puoi usare solo numeri decimali con il punto (es. 0.5, -1.23).\n
+        "• Puoi usare solo numeri decimali con il punto (es. 0.5, -1.23).\n"
         "• La percentuale è riferita alla variazione giornaliera di GME.\n"
         "• Puoi scommettere SOLO UNA VOLTA al giorno, evita pagliacciate.\n"
-        "• Non puoi scommettere se sei bannato.E se sei bannato vuol dire che sei un cagacazzo\n
+        "• Non puoi scommettere se sei bannato.E se sei bannato vuol dire che sei un cagacazzo\n"
         "────────────────────\n"
         "⏰ ORARI & GIORNI DI GIOCO\n"
         "────────────────────\n"
         "• Si gioca solo nei giorni di mercato aperto (no weekend, no giorni in CHIUSURE_MERCATO).\n"
-        "• Le scommesse si possono fare dalle 00:00 alle 15:30. Non cagate il cazzo per i giorni in cui c'è il cambio dell'ora sfasato con gli USA.\n
+        "• Le scommesse si possono fare dalle 00:00 alle 15:30. Non cagate il cazzo per i giorni in cui c'è il cambio dell'ora sfasato con gli USA.\n"
 
         "────────────────────\n"
         "🏆 CALCOLO RISULTATI \n"
@@ -574,7 +574,7 @@ async def istruzioni(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         "Variabile:\n"
         "• Il bot calcola delle differenze tra i risultati dei vari giocatori e le trasforma in vincite/perdite .\n"
-        "• Parte variabile: il bot confronta quanto ogni previsione è lontana dal valore reale.\n
+        "• Parte variabile: il bot confronta quanto ogni previsione è lontana dal valore reale.\n"
         "Ogni giocatore nella prima metà della classifica giornaliera guadagna quello che perde il corrispettivo giocatore nella seconda metà della classifica giornaliera\n"
         "La formula utilizzata è:differenza_di_errore_in_punti_percentuali × 5€.\n"
         "In pratica, ogni 0,1 punti percentuali di errore in più tra due giocatori valgono 0,5€ a favore del più preciso (e -0,5€ per l’altro).\n"
@@ -584,7 +584,7 @@ async def istruzioni(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         "Se NON hai scommesso:\n"
         "• Perdi sempre 10€ di penalità giornaliera.\n"
-        "• I 10€ per ogni inattivo vanno a formare il “tesoretto” della settimana.\n
+        "• I 10€ per ogni inattivo vanno a formare il “tesoretto” della settimana.\n"
 
         "────────────────────\n"
         "🎯 PERFECT GUESS\n"
@@ -603,7 +603,7 @@ async def istruzioni(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Il comando /vincitore aggiorna il tesoretto e il saldo dei non scommettitori.\n"
 
         "Assegnazione tesoretto:\n"
-        "• Il venerdì è il grande giorno! Chi arriva primo il venerdì si porta a casa il tesoretto della settimana!
+        "• Il venerdì è il grande giorno! Chi arriva primo il venerdì si porta a casa il tesoretto della settimana!"
         
         "────────────────────\n"
         "📊 PRINCIPALI COMANDI\n"
