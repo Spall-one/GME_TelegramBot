@@ -523,19 +523,124 @@ async def vincitore(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def istruzioni(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "Ogni giorno puoi scommettere sulla variazione percentuale di <b>$GME</b>.\n\n"
-        "<b>🕒 Orari</b>\n"
-        "• Scommesse 00:00–15:30 (ora italiana)\n"
-        "• Risultati dopo 22:10\n\n"
-        "<b>💰 Punteggio</b>\n"
-        "• 1°: +150€ • 2°: +100€ • 3°: +50€\n"
-        "• Ultimi 3: -50€, -100€, -150€\n"
-        "• Variabile: differenza * 5 contro l'opposto\n\n"
-        "<b>🎯 Perfect guess</b> +300€ + parte variabile dei perdenti\n"
-        "<b>😴 Inattivi</b> -10€ → tesoretto\n"
-        "<b>💎 Tesoretto</b> al vincitore del venerdì\n\n"
-        "<b>Comandi:</b> /bet, /vincitore [yesterday], /scommesse, /classifica, /bilancio, "
-        "/tesoretto, /id, /bannati, /ban, /unban, /admin, /chatid, /testVincitore, /betTEST"
+        
+        "🎯 OBIETTIVO"
+        "Ogni giorno si scommette sulla variazione percentuale del titolo GME (chiusura odierna rispetto alla chiusura di ieri)\n."
+        "Ogni utente ha un saldo in € virtuali che sale o scende in base ai risultati.\n"
+        "La classifica rappresenta i debiti o crediti che gli utenti dovranno pagare/ricevere il CRISTO DIO DI GIORNO IN CUI AVVERRA' IL MOASS\n"
+        "(Perchè avverrà, vero?)\n\n"
+
+       " ────────────────────\n"
+       "📌 COME FARE UNA SCOMMESSA\n"
+       " ────────────────────\n"
+       " Usa il comando:\n"
+
+        "/bet <valore>\n"
+
+        "Esempi:\n"
+        "• /bet 1.5      → prevedi +1,50%\n"
+        "• /bet -0.75    → prevedi -0,75%\n"
+        "• /bet 0        → prevedi 0,00%\n"
+
+        "Regole:\n"
+        "• Puoi usare solo numeri decimali con il punto (es. 0.5, -1.23).\n
+        "• La percentuale è riferita alla variazione giornaliera di GME.\n"
+        "• Puoi scommettere SOLO UNA VOLTA al giorno, evita pagliacciate.\n"
+        "• Non puoi scommettere se sei bannato.E se sei bannato vuol dire che sei un cagacazzo\n
+        "────────────────────\n"
+        "⏰ ORARI & GIORNI DI GIOCO\n"
+        "────────────────────\n"
+        "• Si gioca solo nei giorni di mercato aperto (no weekend, no giorni in CHIUSURE_MERCATO).\n"
+        "• Le scommesse si possono fare dalle 00:00 alle 15:30. Non cagate il cazzo per i giorni in cui c'è il cambio dell'ora sfasato con gli USA.\n
+
+        "────────────────────\n"
+        "🏆 CALCOLO RISULTATI \n"
+        "────────────────────\n"
+        "Quando lanci:\n"
+
+        "/vincitore\n"
+        
+
+        "il bot:\n"
+        "1️- Recupera la variazione giornaliera di GME per quella data.\n"
+        "2️- Considera tutte le scommesse registrate per quel giorno.\n"
+        "3️- Ordina i giocatori in base alla distanza assoluta dal valore reale (Diff).\n"
+
+        "Premi Fissi:\n"
+        "• 1° classificato: +150€\n"
+        "• 2° classificato: +100€\n"
+        "• 3° classificato: +50€\n"
+        "• Ultimi  3: -50€, -100€, -150€ (dal terzultimo all’ultimo)\n"
+
+        "Variabile:\n"
+        "• Il bot calcola delle differenze tra i risultati dei vari giocatori e le trasforma in vincite/perdite .\n"
+        "• Parte variabile: il bot confronta quanto ogni previsione è lontana dal valore reale.\n
+        "Ogni giocatore nella prima metà della classifica giornaliera guadagna quello che perde il corrispettivo giocatore nella seconda metà della classifica giornaliera\n"
+        "La formula utilizzata è:differenza_di_errore_in_punti_percentuali × 5€.\n"
+        "In pratica, ogni 0,1 punti percentuali di errore in più tra due giocatori valgono 0,5€ a favore del più preciso (e -0,5€ per l’altro).\n"
+
+        "Se hai scommesso:\n"
+        "• Puoi vincere o perdere in base a posizione, fissi e variabili.\n"
+
+        "Se NON hai scommesso:\n"
+        "• Perdi sempre 10€ di penalità giornaliera.\n"
+        "• I 10€ per ogni inattivo vanno a formare il “tesoretto” della settimana.\n
+
+        "────────────────────\n"
+        "🎯 PERFECT GUESS\n"
+        "────────────────────\n"
+        "Se almeno un giocatore indovina esattamente la variazione (es. GME fa +0.00% e qualcuno ha scommesso 0.00%), scatta la modalità “perfect guess”:\n"
+
+        "• Il perfect guesser si porta a casa tutto il bottino: prende un fisso di 300€.\n"
+        "• Viene calcolata comunque la parte variabile contro i giocatori perdenti, quindi quelli della seocnda metà della classifica giornaliera.\n"
+       
+
+        "────────────────────\n"
+        "💰 TESORETTO SETTIMANALE\n"
+        "────────────────────\n"
+        "• Ogni giorno, chi NON scommette perde 10€.\n"
+        "• Questi 10€ a testa vengono accumulati in un tesoretto settimanale.\n"
+        "• Il comando /vincitore aggiorna il tesoretto e il saldo dei non scommettitori.\n"
+
+        "Assegnazione tesoretto:\n"
+        "• Il venerdì è il grande giorno! Chi arriva primo il venerdì si porta a casa il tesoretto della settimana!
+        
+        "────────────────────\n"
+        "📊 PRINCIPALI COMANDI\n"
+        "────────────────────\n"
+        "/bet <valore>\n"
+          "Registra la tua scommessa giornaliera (in %).\n"
+
+        "/vincitore\n"
+          "Calcola e mostra i risultati del giorno corrente (se non è già stato calcolato).\n"
+
+        "/vincitore yesterday\n"
+          "Stessa cosa ma riferita a ieri:\n"
+          "– usa la data di ieri,\n"
+          "– aggiorna saldi e tesoretto di quella data,\n"
+          "– non ricalcola se esiste già un record in winners per quella data.\n"
+
+        "/scommesse\n"
+          "Mostra le scommesse registrate per la giornata in corso.\n"
+
+        "/classifica\n"
+          "Mostra la classifica completa con i saldi correnti.\n"
+
+        "/bilancio\n"
+          "Mostra il tuo saldo personale.\n"
+
+        "/istruzioni\n"
+          "Mostra questo manuale.\n"
+
+        "/ban <username> <giorni>   (solo admin)\n"
+          "Banna un utente per un certo numero di giorni. Durante il ban non può scommettere.\n"
+
+        "/unban <username>          (solo admin)\n"
+          "Sblocca un utente bannato.\n"
+
+        "/bannati                    (solo admin)\n"
+          "Mostra la lista degli utenti attualmente bannati.\n"
+
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
