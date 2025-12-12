@@ -6,6 +6,7 @@ import logging
 import sqlite3
 import requests
 import random
+import math  # mettilo in cima al file con gli altri import
 import asyncio
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -176,7 +177,19 @@ async def bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        prediction = round(float(context.args[0]), 2)
+        raw_prediction = float(context.args[0])
+
+        # blocca NaN/Inf
+        if not math.isfinite(raw_prediction):
+            raise ValueError
+
+        # blocca valori impossibili (< -100%)
+        if raw_prediction < -100:
+            await update.message.reply_text("❌ Scommessa rifiutata: il minimo consentito è -100.00%.")
+            return
+
+        prediction = round(raw_prediction, 2)
+
     except (IndexError, ValueError):
         await update.message.reply_text("❗ Usa: /bet 2.5")
         return
