@@ -397,7 +397,7 @@ async def vincitore(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if date_obj.weekday() == 4 and target_date not in CHIUSURE_MERCATO and tesoretto_val > 0:
             bonus_tesoretto = tesoretto_val
             total_prize = round(total_prize + tesoretto_val, 2)
-            c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2) WHERE user_id = ?", (tesoretto_val, pg_id))
+            #c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2) WHERE user_id = ?", (tesoretto_val, pg_id))
             c.execute("DELETE FROM weekly_pot WHERE week_start = ?", (week_start,))
 
         c.execute("""
