@@ -27,8 +27,8 @@ load_dotenv()
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
 START_TIME = time(0, 0)
-CUTOFF_TIME = time(15, 30)
-MARKET_CLOSE_TIME = time(22, 10)
+CUTOFF_TIME = time(14, 30)
+MARKET_CLOSE_TIME = time(21, 10)
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 API_KEY = os.getenv("FINNHUB_API_KEY")
