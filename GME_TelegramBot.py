@@ -9,6 +9,7 @@ import random
 import math  # mettilo in cima al file con gli altri import
 import asyncio
 from datetime import datetime, time, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -78,6 +79,23 @@ async def keep_alive_ping():
 
 # ---------------------- DATABASE ----------------------
 DB_FILE = "predictions.db"
+DB_UPDATES_DIR = Path(__file__).resolve().parent / "db_updates"
+
+
+def apply_text_db_updates(connection):
+    """Apply idempotent SQL updates kept as text files, avoiding binary DB diffs in PRs."""
+    if not DB_UPDATES_DIR.exists():
+        return
+
+    for sql_path in sorted(DB_UPDATES_DIR.glob("*.sql")):
+        script = sql_path.read_text(encoding="utf-8").strip()
+        if not script:
+            continue
+        connection.executescript(script)
+        logging.info(f"Applied DB update script: {sql_path.name}")
+    connection.commit()
+
+
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 c = conn.cursor()
 conn.execute("PRAGMA journal_mode=WAL;")
@@ -118,6 +136,7 @@ c.execute("""
     )
 """)
 conn.commit()
+apply_text_db_updates(conn)
 
 # ---------------------- DATI GME ----------------------
 def get_gme_closing_percentage():
