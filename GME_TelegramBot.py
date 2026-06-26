@@ -83,16 +83,49 @@ DB_UPDATES_DIR = Path(__file__).resolve().parent / "db_updates"
 
 
 def apply_text_db_updates(connection):
-    """Apply idempotent SQL updates kept as text files, avoiding binary DB diffs in PRs."""
+    """Apply each SQL update file once, tracking applied scripts in the DB."""
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS applied_db_updates (
+            filename TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     if not DB_UPDATES_DIR.exists():
+        connection.commit()
         return
 
     for sql_path in sorted(DB_UPDATES_DIR.glob("*.sql")):
+        filename = sql_path.name
+        already_applied = connection.execute(
+            "SELECT 1 FROM applied_db_updates WHERE filename = ?",
+            (filename,),
+        ).fetchone()
+        if already_applied:
+            logging.info(f"Skipping already applied DB update script: {filename}")
+            continue
+
         script = sql_path.read_text(encoding="utf-8").strip()
         if not script:
+            connection.execute(
+                "INSERT INTO applied_db_updates (filename) VALUES (?)",
+                (filename,),
+            )
+            logging.info(f"Marked empty DB update script as applied: {filename}")
             continue
-        connection.executescript(script)
-        logging.info(f"Applied DB update script: {sql_path.name}")
+
+        try:
+            connection.executescript(script)
+            connection.execute(
+                "INSERT INTO applied_db_updates (filename) VALUES (?)",
+                (filename,),
+            )
+            connection.commit()
+            logging.info(f"Applied DB update script: {filename}")
+        except sqlite3.Error:
+            connection.rollback()
+            raise
+
     connection.commit()
 
 
@@ -137,6 +170,15 @@ c.execute("""
 """)
 conn.commit()
 apply_text_db_updates(conn)
+
+
+def get_unassigned_pot(week_start):
+    c.execute("SELECT COALESCE(SUM(amount), 0) FROM weekly_pot WHERE week_start <= ?", (week_start,))
+    return round(c.fetchone()[0] or 0.0, 2)
+
+
+def clear_unassigned_pot(week_start):
+    c.execute("DELETE FROM weekly_pot WHERE week_start <= ?", (week_start,))
 
 # ---------------------- DATI GME ----------------------
 def get_gme_closing_percentage():
@@ -369,8 +411,7 @@ async def scommesse(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def tesoretto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = datetime.now(ITALY_TZ).date()
     week_start = (today - timedelta(days=today.weekday())).strftime("%Y-%m-%d")
-    c.execute("SELECT SUM(amount) FROM weekly_pot WHERE week_start = ?", (week_start,))
-    total = c.fetchone()[0] or 0.0
+    total = get_unassigned_pot(week_start)
     await update.message.reply_text(f"💰 <b>Tesoretto attuale:</b> {total:.2f}€", parse_mode=ParseMode.HTML)
 
 async def vincitore(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -425,9 +466,7 @@ async def vincitore(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ON CONFLICT(week_start) DO UPDATE SET amount = ROUND(amount + ?, 2)
         """, (week_start, penalty_total, penalty_total))
 
-        c.execute("SELECT amount FROM weekly_pot WHERE week_start = ?", (week_start,))
-        row = c.fetchone()
-        tesoretto_val = round(row[0], 2) if row else 0.0
+        tesoretto_val = get_unassigned_pot(week_start)
 
         perfect = next((p for p in players if p[3] == 0.0), None)
         if perfect:
@@ -454,8 +493,7 @@ async def vincitore(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if date_obj.weekday() == 4 and target_date not in CHIUSURE_MERCATO and tesoretto_val > 0:
                 bonus_tesoretto = tesoretto_val
                 total_prize = round(total_prize + tesoretto_val, 2)
-                #c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2) WHERE user_id = ?", (tesoretto_val, pg_id))
-                c.execute("DELETE FROM weekly_pot WHERE week_start = ?", (week_start,))
+                clear_unassigned_pot(week_start)
 
             c.execute("""
                 INSERT INTO balances (user_id, username, balance)
@@ -545,10 +583,7 @@ async def vincitore(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     username = excluded.username
             """, (uid, uname, totale, totale))
 
-        c.execute("SELECT week_start, amount FROM weekly_pot WHERE week_start = ?", (week_start,))
-        row = c.fetchone()
-        tesoretto_val = row[1] if row else 0
-        tesoretto_week_start = row[0] if row else None
+        tesoretto_val = get_unassigned_pot(week_start)
 
         msg = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n"
         msg += f"<i>Tesoretto attuale: {tesoretto_val}€</i>\n\n"
@@ -575,7 +610,7 @@ async def vincitore(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if date_obj.weekday() == 4 and target_date not in CHIUSURE_MERCATO and tesoretto_val > 0:
             c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2) WHERE user_id = ?", (tesoretto_val, winner_uid))
-            c.execute("DELETE FROM weekly_pot WHERE week_start = ?", (tesoretto_week_start,))
+            clear_unassigned_pot(week_start)
             total_final = round(winner_tot + tesoretto_val, 2)
             msg += (
                 f"\n💰 Tesoretto settimanale: @{winner_username} riceve anche <b>{tesoretto_val}€</b> extra!\n"
@@ -690,6 +725,8 @@ async def istruzioni(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  Mostra il tuo saldo personale.\n\n"
         "/istruzioni\n"
         "  Mostra questo manuale.\n\n"
+        "/help\n"
+        "  Mostra l'elenco rapido di tutti i comandi disponibili.\n\n"
         "/ban &lt;username&gt; &lt;giorni&gt;   (solo admin)\n"
         "  Banna un utente per un certo numero di giorni. Durante il ban non può scommettere.\n\n"
         "/unban &lt;username&gt;          (solo admin)\n"
@@ -697,6 +734,35 @@ async def istruzioni(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/bannati                    (solo admin)\n"
         "  Mostra la lista degli utenti attualmente bannati.\n"
 
+    )
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        "🤖 <b>Comandi disponibili</b>\n\n"
+        "<b>Gioco</b>\n"
+        "• /bet &lt;valore&gt; — registra la scommessa giornaliera.\n"
+        "• /scommesse — mostra le scommesse del giorno.\n"
+        "• /vincitore — calcola il vincitore del giorno dopo la chiusura.\n"
+        "• /vincitore yesterday — calcola il vincitore del giorno precedente.\n"
+        "• /classifica — mostra la classifica completa.\n"
+        "• /bilancio — mostra il tuo saldo personale.\n"
+        "• /tesoretto — mostra il tesoretto disponibile.\n\n"
+        "<b>Info</b>\n"
+        "• /istruzioni — mostra il regolamento completo.\n"
+        "• /help — mostra questo elenco comandi.\n"
+        "• /id — registra/invia il tuo ID Telegram all'admin.\n"
+        "• /chatid — mostra il chat_id della chat corrente.\n\n"
+        "<b>Admin</b>\n"
+        "• /ban &lt;username&gt; &lt;giorni&gt; — banna un utente.\n"
+        "• /unban &lt;username&gt; — rimuove il ban.\n"
+        "• /bannati — mostra gli utenti bannati.\n"
+        "• /admin — mostra gli amministratori della chat.\n\n"
+        "<b>Test</b>\n"
+        "• /betTEST &lt;valore&gt; — comando di test per scommessa.\n"
+        "• /testVincitore — simula il calcolo del vincitore.\n"
+        "• /testapi — verifica che il bot risponda.\n"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
@@ -961,6 +1027,7 @@ def main():
     application.add_handler(CommandHandler("classifica", classifica))
     application.add_handler(CommandHandler("bilancio", bilancio))
     application.add_handler(CommandHandler("istruzioni", istruzioni))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("id", registra_id))
     application.add_handler(CommandHandler("ban", ban))
     application.add_handler(CommandHandler("unban", unban))
