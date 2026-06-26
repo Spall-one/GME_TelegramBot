@@ -725,6 +725,8 @@ async def istruzioni(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  Mostra il tuo saldo personale.\n\n"
         "/istruzioni\n"
         "  Mostra questo manuale.\n\n"
+        "/help\n"
+        "  Mostra l'elenco rapido di tutti i comandi disponibili.\n\n"
         "/ban &lt;username&gt; &lt;giorni&gt;   (solo admin)\n"
         "  Banna un utente per un certo numero di giorni. Durante il ban non può scommettere.\n\n"
         "/unban &lt;username&gt;          (solo admin)\n"
@@ -732,6 +734,35 @@ async def istruzioni(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/bannati                    (solo admin)\n"
         "  Mostra la lista degli utenti attualmente bannati.\n"
 
+    )
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        "🤖 <b>Comandi disponibili</b>\n\n"
+        "<b>Gioco</b>\n"
+        "• /bet &lt;valore&gt; — registra la scommessa giornaliera.\n"
+        "• /scommesse — mostra le scommesse del giorno.\n"
+        "• /vincitore — calcola il vincitore del giorno dopo la chiusura.\n"
+        "• /vincitore yesterday — calcola il vincitore del giorno precedente.\n"
+        "• /classifica — mostra la classifica completa.\n"
+        "• /bilancio — mostra il tuo saldo personale.\n"
+        "• /tesoretto — mostra il tesoretto disponibile.\n\n"
+        "<b>Info</b>\n"
+        "• /istruzioni — mostra il regolamento completo.\n"
+        "• /help — mostra questo elenco comandi.\n"
+        "• /id — registra/invia il tuo ID Telegram all'admin.\n"
+        "• /chatid — mostra il chat_id della chat corrente.\n\n"
+        "<b>Admin</b>\n"
+        "• /ban &lt;username&gt; &lt;giorni&gt; — banna un utente.\n"
+        "• /unban &lt;username&gt; — rimuove il ban.\n"
+        "• /bannati — mostra gli utenti bannati.\n"
+        "• /admin — mostra gli amministratori della chat.\n\n"
+        "<b>Test</b>\n"
+        "• /betTEST &lt;valore&gt; — comando di test per scommessa.\n"
+        "• /testVincitore — simula il calcolo del vincitore.\n"
+        "• /testapi — verifica che il bot risponda.\n"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
@@ -996,6 +1027,7 @@ def main():
     application.add_handler(CommandHandler("classifica", classifica))
     application.add_handler(CommandHandler("bilancio", bilancio))
     application.add_handler(CommandHandler("istruzioni", istruzioni))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("id", registra_id))
     application.add_handler(CommandHandler("ban", ban))
     application.add_handler(CommandHandler("unban", unban))
