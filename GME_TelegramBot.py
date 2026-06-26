@@ -9,6 +9,7 @@ import random
 import math  # mettilo in cima al file con gli altri import
 import asyncio
 from datetime import datetime, time, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -78,6 +79,56 @@ async def keep_alive_ping():
 
 # ---------------------- DATABASE ----------------------
 DB_FILE = "predictions.db"
+DB_UPDATES_DIR = Path(__file__).resolve().parent / "db_updates"
+
+
+def apply_text_db_updates(connection):
+    """Apply each SQL update file once, tracking applied scripts in the DB."""
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS applied_db_updates (
+            filename TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    if not DB_UPDATES_DIR.exists():
+        connection.commit()
+        return
+
+    for sql_path in sorted(DB_UPDATES_DIR.glob("*.sql")):
+        filename = sql_path.name
+        already_applied = connection.execute(
+            "SELECT 1 FROM applied_db_updates WHERE filename = ?",
+            (filename,),
+        ).fetchone()
+        if already_applied:
+            logging.info(f"Skipping already applied DB update script: {filename}")
+            continue
+
+        script = sql_path.read_text(encoding="utf-8").strip()
+        if not script:
+            connection.execute(
+                "INSERT INTO applied_db_updates (filename) VALUES (?)",
+                (filename,),
+            )
+            logging.info(f"Marked empty DB update script as applied: {filename}")
+            continue
+
+        try:
+            connection.executescript(script)
+            connection.execute(
+                "INSERT INTO applied_db_updates (filename) VALUES (?)",
+                (filename,),
+            )
+            connection.commit()
+            logging.info(f"Applied DB update script: {filename}")
+        except sqlite3.Error:
+            connection.rollback()
+            raise
+
+    connection.commit()
+
+
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 c = conn.cursor()
 conn.execute("PRAGMA journal_mode=WAL;")
@@ -118,6 +169,16 @@ c.execute("""
     )
 """)
 conn.commit()
+apply_text_db_updates(conn)
+
+
+def get_unassigned_pot(week_start):
+    c.execute("SELECT COALESCE(SUM(amount), 0) FROM weekly_pot WHERE week_start <= ?", (week_start,))
+    return round(c.fetchone()[0] or 0.0, 2)
+
+
+def clear_unassigned_pot(week_start):
+    c.execute("DELETE FROM weekly_pot WHERE week_start <= ?", (week_start,))
 
 # ---------------------- DATI GME ----------------------
 def get_gme_closing_percentage():
@@ -350,8 +411,7 @@ async def scommesse(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def tesoretto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = datetime.now(ITALY_TZ).date()
     week_start = (today - timedelta(days=today.weekday())).strftime("%Y-%m-%d")
-    c.execute("SELECT SUM(amount) FROM weekly_pot WHERE week_start = ?", (week_start,))
-    total = c.fetchone()[0] or 0.0
+    total = get_unassigned_pot(week_start)
     await update.message.reply_text(f"💰 <b>Tesoretto attuale:</b> {total:.2f}€", parse_mode=ParseMode.HTML)
 
 async def vincitore(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -406,9 +466,7 @@ async def vincitore(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ON CONFLICT(week_start) DO UPDATE SET amount = ROUND(amount + ?, 2)
         """, (week_start, penalty_total, penalty_total))
 
-        c.execute("SELECT amount FROM weekly_pot WHERE week_start = ?", (week_start,))
-        row = c.fetchone()
-        tesoretto_val = round(row[0], 2) if row else 0.0
+        tesoretto_val = get_unassigned_pot(week_start)
 
         perfect = next((p for p in players if p[3] == 0.0), None)
         if perfect:
@@ -435,8 +493,7 @@ async def vincitore(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if date_obj.weekday() == 4 and target_date not in CHIUSURE_MERCATO and tesoretto_val > 0:
                 bonus_tesoretto = tesoretto_val
                 total_prize = round(total_prize + tesoretto_val, 2)
-                #c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2) WHERE user_id = ?", (tesoretto_val, pg_id))
-                c.execute("DELETE FROM weekly_pot WHERE week_start = ?", (week_start,))
+                clear_unassigned_pot(week_start)
 
             c.execute("""
                 INSERT INTO balances (user_id, username, balance)
@@ -526,10 +583,7 @@ async def vincitore(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     username = excluded.username
             """, (uid, uname, totale, totale))
 
-        c.execute("SELECT week_start, amount FROM weekly_pot WHERE week_start = ?", (week_start,))
-        row = c.fetchone()
-        tesoretto_val = row[1] if row else 0
-        tesoretto_week_start = row[0] if row else None
+        tesoretto_val = get_unassigned_pot(week_start)
 
         msg = f"<b>📈 Variazione GME ({target_date}): {closing_percentage}%</b>\n"
         msg += f"<i>Tesoretto attuale: {tesoretto_val}€</i>\n\n"
@@ -556,7 +610,7 @@ async def vincitore(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if date_obj.weekday() == 4 and target_date not in CHIUSURE_MERCATO and tesoretto_val > 0:
             c.execute("UPDATE balances SET balance = ROUND(balance + ?, 2) WHERE user_id = ?", (tesoretto_val, winner_uid))
-            c.execute("DELETE FROM weekly_pot WHERE week_start = ?", (tesoretto_week_start,))
+            clear_unassigned_pot(week_start)
             total_final = round(winner_tot + tesoretto_val, 2)
             msg += (
                 f"\n💰 Tesoretto settimanale: @{winner_username} riceve anche <b>{tesoretto_val}€</b> extra!\n"
