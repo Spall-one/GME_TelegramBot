@@ -1,6 +1,16 @@
 -- Aggiornamento manuale del 01/07/2026.
 -- Il file è idempotente.
 
+INSERT INTO predictions (user_id, username, prediction, date) VALUES
+    (545408682, 'Darione81', -0.69, '2026-06-30'),
+    (68001743, 'Spall_one', 0.56, '2026-06-30'),
+    (861107469, 'Henifax', 0.74, '2026-06-30'),
+    (1415311504, 'Tosa89', 1.00, '2026-06-30')
+ON CONFLICT(user_id, date) DO UPDATE SET
+    username = excluded.username,
+    prediction = excluded.prediction;
+
+
 INSERT INTO balances (user_id, username, balance) VALUES
     (68001743, 'Spall_one', 9642.2),
     (1384243346, 'aw3tr4n4', 8203.95),
