@@ -199,7 +199,7 @@ def _unix_timestamp(date_obj):
 
 def _get_gme_historical_closing_percentage(target_date):
     start_date = target_date - timedelta(days=10)
-    end_date = target_date + timedelta(days=1)
+    end_date = target_date + timedelta(days=3)  # Use 3 days buffer to avoid timezone and settlement cutoff issues
     url = (
         f"https://finnhub.io/api/v1/stock/candle?symbol={GME_TICKER}"
         f"&resolution=D&from={_unix_timestamp(start_date)}"
@@ -213,10 +213,22 @@ def _get_gme_historical_closing_percentage(target_date):
             return None
 
         candles = sorted(
-            (datetime.fromtimestamp(ts, timezone.utc).date(), close)
+            (ts, close)
             for ts, close in zip(data["t"], data["c"])
         )
-        target_idx = next((idx for idx, (day, _) in enumerate(candles) if day == target_date), None)
+        
+        # Search from the end of the list to find the correct day matching target_date
+        # (Checking both UTC and America/New_York to be robust against any API timezone conventions)
+        target_idx = None
+        ny_tz = ZoneInfo("America/New_York")
+        for idx in range(len(candles) - 1, -1, -1):
+            ts, _ = candles[idx]
+            utc_date = datetime.fromtimestamp(ts, timezone.utc).date()
+            ny_date = datetime.fromtimestamp(ts, ny_tz).date()
+            if utc_date == target_date or ny_date == target_date:
+                target_idx = idx
+                break
+
         if target_idx is None or target_idx == 0:
             logging.warning(f"Chiusura storica GME insufficiente per {target_date}: {candles}")
             return None
@@ -233,14 +245,29 @@ def _get_gme_historical_closing_percentage(target_date):
 
 def get_gme_closing_percentage_for_date(target_date):
     today = datetime.now(ITALY_TZ).date()
-    if target_date == today:
-        return get_gme_closing_percentage()
+    
+    # Try Quote API first if target_date is today or yesterday (for robust live/fallback closing values)
+    if target_date in (today, today - timedelta(days=1)):
+        url = f"https://finnhub.io/api/v1/quote?symbol={GME_TICKER}&token={API_KEY}"
+        try:
+            data = requests.get(url, timeout=10).json()
+            t = data.get("t")
+            if t:
+                quote_date = datetime.fromtimestamp(t, ZoneInfo("America/New_York")).date()
+                if quote_date == target_date:
+                    pc, cprice = data.get("pc"), data.get("c")
+                    if pc not in (None, 0) and cprice is not None:
+                        return round(((cprice - pc) / pc) * 100, 2)
+        except Exception as e:
+            logging.error(f"Errore Finnhub Quote fallback per {target_date}: {e}")
+            
     return _get_gme_historical_closing_percentage(target_date)
 
 
 def get_gme_closing_percentage_yesterday():
     yesterday = datetime.now(ITALY_TZ).date() - timedelta(days=1)
     return _get_gme_historical_closing_percentage(yesterday)
+
 
 # ---------------------- HANDLERS ----------------------
 async def bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
